@@ -144,6 +144,20 @@ tr:last-child td{border-bottom:none}
 .staging-badge.on{display:inline-flex}
 .staging-dot{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.9);display:inline-block;flex-shrink:0;animation:pulse 1.4s ease-in-out infinite}
 @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.5;transform:scale(1.3)}}
+/* Land Cloud mark loading animation — dashed ring marches, inner hex breathes,
+   corner nodes twinkle. Applied only to marks carrying .lc-anim (splash + boot). */
+.lc-anim .lc-ring{animation:lc-march 2.2s linear infinite}
+.lc-anim .lc-core{transform-box:fill-box;transform-origin:center;animation:lc-core 2.4s ease-in-out infinite}
+.lc-anim .lc-node{transform-box:fill-box;transform-origin:center;animation:lc-twinkle 1.8s ease-in-out infinite}
+.lc-anim .lc-node:nth-of-type(2){animation-delay:.12s}
+.lc-anim .lc-node:nth-of-type(3){animation-delay:.24s}
+.lc-anim .lc-node:nth-of-type(4){animation-delay:.36s}
+.lc-anim .lc-node:nth-of-type(5){animation-delay:.48s}
+.lc-anim .lc-node:nth-of-type(6){animation-delay:.6s}
+@keyframes lc-march{to{stroke-dashoffset:-46}}
+@keyframes lc-core{0%,100%{opacity:.72;transform:scale(.9)}50%{opacity:1;transform:scale(1.07)}}
+@keyframes lc-twinkle{0%,100%{opacity:.35}50%{opacity:1}}
+@media(prefers-reduced-motion:reduce){.lc-anim .lc-ring,.lc-anim .lc-core,.lc-anim .lc-node{animation:none;opacity:1;transform:none;stroke-dashoffset:0}}
 
 /* Login */
 .login-wrap{height:100vh;display:flex;align-items:center;justify-content:center;background:var(--sidebar)}
@@ -403,11 +417,10 @@ thead .stickyc{background:var(--card)}
 <div id="root"></div>
 <!-- pre-mount splash: shows instantly while React/fonts/supabase load, faded out on mount -->
 <div id="lc-splash" style="position:fixed;inset:0;z-index:9999;background:#0e3a3d;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;transition:opacity .45s ease">
-  <svg width="60" height="60" viewBox="0 0 64 64" fill="none" aria-label="DalOS Land Cloud">
-    <path d="M8 22 L27 6 L52 13 L58 36 L39 56 L14 48 Z" stroke="#5fc9c4" stroke-width="2.4" stroke-linejoin="round" stroke-dasharray="6.5 5" opacity=".9"/>
-    <path d="M19 25 L30 17 L45 21 L48 34 L36 45 L22 40 Z" fill="#8fe0ad"/>
-    <g fill="#5fc9c4"><circle cx="8" cy="22" r="2.9"/><circle cx="27" cy="6" r="2.9"/><circle cx="52" cy="13" r="2.9"/><circle cx="58" cy="36" r="2.9"/><circle cx="39" cy="56" r="2.9"/><circle cx="14" cy="48" r="2.9"/></g>
-    <animateTransform attributeName="transform" attributeType="XML" type="scale" values="1;1.04;1" dur="2.4s" repeatCount="indefinite" additive="sum"/>
+  <svg class="lc-anim" width="60" height="60" viewBox="0 0 64 64" fill="none" aria-label="DalOS Land Cloud">
+    <path class="lc-ring" d="M8 22 L27 6 L52 13 L58 36 L39 56 L14 48 Z" stroke="#5fc9c4" stroke-width="2.4" stroke-linejoin="round" stroke-dasharray="6.5 5" opacity=".9"/>
+    <path class="lc-core" d="M19 25 L30 17 L45 21 L48 34 L36 45 L22 40 Z" fill="#8fe0ad"/>
+    <g fill="#5fc9c4"><circle class="lc-node" cx="8" cy="22" r="2.9"/><circle class="lc-node" cx="27" cy="6" r="2.9"/><circle class="lc-node" cx="52" cy="13" r="2.9"/><circle class="lc-node" cx="58" cy="36" r="2.9"/><circle class="lc-node" cx="39" cy="56" r="2.9"/><circle class="lc-node" cx="14" cy="48" r="2.9"/></g>
   </svg>
   <div style="font-family:'DM Serif Display',Georgia,serif;font-size:22px"><span style="color:#f4f1e8">Dal</span><span style="color:#5fc9c4">OS</span><span style="color:#f4f1e8"> Land Cloud</span></div>
   <div style="font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:#5f8583;font-family:'Instrument Sans',system-ui,sans-serif">Loading…</div>
@@ -606,35 +619,41 @@ function StructureScreen(ctx){
   var rsMiss=scope.filter(function(b){return isActive(b.lifecycle)&&!b.rootstock_id;}).length;
   var issues=scope.filter(function(b){return isActive(b.lifecycle)&&(!b.jde_cost_center_id||!b.rootstock_id);}).length;
 
-  // ── Crop mix (planted area share) ──
-  var mix={}; scope.forEach(function(b){ mix[b.product_id]=(mix[b.product_id]||0)+Number(b.total_area_fed||0); });
+  // ── Crop mix (total & bearing area) ──
+  var mix={},mixB={}; scope.forEach(function(b){ mix[b.product_id]=(mix[b.product_id]||0)+Number(b.total_area_fed||0); mixB[b.product_id]=(mixB[b.product_id]||0)+Number(b.planted_area_fed||0); });
   var mixTot=Object.keys(mix).reduce(function(a,k){return a+mix[k];},0)||1;
   var mixKeys=Object.keys(mix).sort(function(a,b){return mix[b]-mix[a];});
 
-  // ── Planting-age profile (3-year buckets) ──
-  var buck={}; scope.forEach(function(b){ if(!b.planting_year) return; var d=Math.floor(b.planting_year/3)*3; buck[d]=(buck[d]||0)+1; });
+  // ── Planting-age profile (3-year buckets, distinct plots) ──
+  var buck={},buckSeen={}; scope.forEach(function(b){ if(!b.planting_year) return; var d=Math.floor(b.planting_year/3)*3; var pk=d+'|'+b.farm_code+'|'+b.sector_code+'|'+b.plot_code; if(buckSeen[pk]) return; buckSeen[pk]=1; buck[d]=(buck[d]||0)+1; });
   var buckKeys=Object.keys(buck).sort(); var buckMax=buckKeys.reduce(function(m,k){return Math.max(m,buck[k]);},1);
 
   var mixPanel=ce('div',{className:'card'},
     ce('div',{className:'section-title'},ce('span',{className:'section-title-bar'}),'Crop mix'),
-    mixKeys.length?mixKeys.map(function(c){ var v=mix[c];
-      return ce('div',{key:c,style:{marginBottom:8}},
-        ce('div',{style:{display:'flex',fontSize:12,marginBottom:3}}, ce('span',null,cropName(c)),
-          ce('span',{style:{marginLeft:'auto',fontFamily:'var(--font-mono)',color:'var(--text3)'}}, fmt(Math.round(v))+' fed · '+Math.round(v/mixTot*100)+'%')),
-        ce('div',{style:{height:7,background:'var(--bg2)',borderRadius:4,overflow:'hidden'}},
-          ce('div',{style:{height:'100%',width:(v/mixTot*100)+'%',background:CROP_COLORS[c]||'#888',borderRadius:4}})));
+    ce('div',{style:{display:'flex',flexWrap:'wrap',gap:14,rowGap:4,alignItems:'center',margin:'2px 0 12px',fontSize:11,color:'var(--text3)'}},
+      ce('span',null, ce('span',{style:{display:'inline-block',width:20,height:8,borderRadius:3,background:'var(--accent)',opacity:.30,verticalAlign:'middle',marginRight:6}}),'Total area'),
+      ce('span',null, ce('span',{style:{display:'inline-block',width:20,height:8,borderRadius:3,background:'var(--accent)',verticalAlign:'middle',marginRight:6}}),'Bearing area'),
+      ce('span',{style:{marginLeft:'auto'}},'% = share of total')),
+    mixKeys.length?mixKeys.map(function(c){ var v=mix[c], vb=mixB[c]||0, col=CROP_COLORS[c]||'#888';
+      return ce('div',{key:c,style:{marginBottom:11}},
+        ce('div',{style:{display:'flex',alignItems:'baseline',gap:8,fontSize:12,marginBottom:4}}, ce('span',null,cropName(c)),
+          ce('span',{style:{marginLeft:'auto',flexShrink:0,fontFamily:'var(--font-mono)',color:'var(--text2)'}}, Math.round(v/mixTot*100)+'%')),
+        ce('div',{style:{position:'relative',height:9,background:'var(--bg2)',borderRadius:5,overflow:'hidden'}},
+          ce('div',{style:{position:'absolute',left:0,top:0,height:'100%',width:(v/mixTot*100)+'%',background:col,opacity:.30,borderRadius:5}}),
+          ce('div',{style:{position:'absolute',left:0,top:0,height:'100%',width:(vb/mixTot*100)+'%',background:col,borderRadius:5}})),
+        ce('div',{style:{fontFamily:'var(--font-mono)',color:'var(--text3)',fontSize:11,marginTop:4}}, 'Total ',ce('b',{style:{color:'var(--text2)'}},fmt(Math.round(v))),' · Bearing ',ce('b',{style:{color:'var(--text2)'}},fmt(Math.round(vb))),' fed'));
     }):ce('div',{style:{fontSize:12,color:'var(--text3)'}},'No blocks in scope.'));
 
   var agePanel=ce('div',{className:'card'},
     ce('div',{className:'section-title'},ce('span',{className:'section-title-bar'}),'Planting age profile'),
     ce('div',{style:{display:'flex',alignItems:'flex-end',gap:5,height:88}},
       buckKeys.length?buckKeys.map(function(k){
-        return ce('div',{key:k,title:buck[k]+' blocks planted '+k+'–'+(Number(k)+2),style:{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'flex-end',height:'100%'}},
+        return ce('div',{key:k,title:buck[k]+(buck[k]===1?' plot':' plots')+' planted '+k+'–'+(Number(k)+2),style:{flex:1,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'flex-end',height:'100%'}},
           ce('div',{style:{fontSize:9,color:'var(--text2)',fontFamily:'var(--font-mono)',marginBottom:2}}, buck[k]),
           ce('div',{style:{width:'70%',height:Math.max(2,Math.round(buck[k]/buckMax*66))+'px',background:'var(--accent)',borderRadius:'3px 3px 0 0'}}),
           ce('div',{style:{fontSize:10,color:'var(--text3)',marginTop:4,fontFamily:'var(--font-mono)'}}, "'"+String(k).slice(2)));
       }):ce('div',{style:{fontSize:12,color:'var(--text3)'}},'No planting years recorded.')),
-    ce('div',{style:{fontSize:11,color:'var(--text3)',marginTop:6}},'Blocks by planting year (3-yr buckets).'));
+    ce('div',{style:{fontSize:11,color:'var(--text3)',marginTop:6}},'Plots by planting year (3-yr buckets).'));
 
   var bview=scope.slice(0,72);
   var blocksInView=ce('div',{className:'card'},
@@ -784,13 +803,13 @@ function RegisterScreen(ctx){
     ce('div',null,
       ce('div',{className:'table-wrap'},
         ce('table',null,
-          ce('thead',null,ce('tr',null,['Block ID','Crop','Farm','Aydi','Variety','Rootstock','Planted','Total fed','Bearing fed','Last season','Aero ha','Cost ctr','Status'].map(function(h){return ce('th',{key:h},h);}))),
+          ce('thead',null,ce('tr',null,['Aydi','Block ID','Crop','Farm','Variety','Rootstock','Planted','Total fed','Bearing fed','Last season','Aero ha','Cost ctr','Status'].map(function(h){var numH={'Planted':1,'Total fed':1,'Bearing fed':1,'Last season':1,'Aero ha':1,'Cost ctr':1};return ce('th',{key:h,style:numH[h]?{textAlign:'right'}:null},h);}))),
           ce('tbody',null, st.rows.map(function(b){
             return ce('tr',{key:b.id,className:'rowlink',onClick:function(){setSel(b);}},
-              ce('td',null, ce('span',{className:'lot'}, b.operational_block_id)),
+              ce('td',{style:{whiteSpace:'nowrap'}}, ce('span',{className:'lot',style:{fontWeight:600}}, b.aydi_block_number||'—')),
+              ce('td',{style:{whiteSpace:'nowrap'}}, ce('span',{className:'lot',style:{color:'var(--text3)'},title:'Operational block ID'}, b.operational_block_id)),
               ce('td',null, ce('span',{style:{display:'inline-block',width:8,height:8,borderRadius:2,background:CROP_COLORS[b.product_id]||'#999',marginRight:6}}), b.product_id),
               ce('td',null, (b.farms&&b.farms.name)||b.farm_code),
-              ce('td',{className:'num'}, b.aydi_block_number),
               ce('td',{className:'ar',dir:'auto'}, (b.varieties&&b.varieties.name)||'—'),
               ce('td',{className:'ar',dir:'auto'}, (b.farm_rootstocks&&b.farm_rootstocks.name)||'—'),
               ce('td',{className:'num'}, b.planting_year),
@@ -1753,15 +1772,17 @@ function BulkImportScreen(ctx){
 
 /* ── Reference Data (§6.11) — Metrics / Rootstocks / Varieties admin ── */
 var ROLE_BADGE={total:'badge-pass',aggregate:'badge-warn',residual:'badge-warn',plan:'badge-neutral',branch:'badge-neutral',child:'badge-neutral',other:'badge-neutral'};
+var ROLE_ORDER=['total','plan','aggregate','branch','child','residual','other'];
 function ReferenceDataScreen(ctx){
   var tb=useState('metrics'); var tab=tb[0],setTab=tb[1];
   var s=useState({loading:true,err:null,d:null}); var st=s[0],set=s[1];
   var msg=useState(null); var flash=msg[0],setFlash=msg[1];
+  var no=useState(false); var newOpen=no[0],setNewOpen=no[1];
   useEffect(function(){ load(); },[]);
   function load(){
     set({loading:true,err:null,d:null});
     Promise.all([
-      supabase.from('farm_metrics').select('code,name_en,name_ar,role,parent_code,aliases,active').order('code'),
+      supabase.from('farm_metrics').select('id,code,name_en,name_ar,role,parent_code,aliases,active').order('code'),
       supabase.from('farm_metric_sets').select('id,product_id,season_year,scenario,farm_metric_set_items(metric_id)').order('product_id').order('season_year'),
       supabase.from('farm_rootstocks').select('id,code,name,product_id,raw_names,active').order('code'),
       supabase.from('varieties').select('id,code,name,canonical_name,raw_names,product_id,active').order('product_id').order('name'),
@@ -1803,8 +1824,10 @@ function ReferenceDataScreen(ctx){
             ce('td',null,m.parent_code?ce('span',{className:'lot'},m.parent_code):'—'),
             ce('td',{className:'ar',dir:'auto',style:{fontSize:11,color:'var(--text3)'}},(m.aliases||[]).join(' · ')||'—'));}))
         )),
-      ce('div',{className:'section-title'},ce('span',{className:'section-title-bar'}),'Metric sets ('+d.sets.length+') — clone for a new season'),
-      ce('div',{className:'note',style:{marginBottom:10}},ce('b',null,'This is the architectural claim (AC4):'),' adding next season is cloning a set here — one row in ',ce('span',{className:'lot'},'farm_metric_sets'),' and its items. No code change, no migration, no deploy.'),
+      ce('div',{style:{display:'flex',alignItems:'center',justifyContent:'space-between',margin:'4px 0 10px'}},
+        ce('div',{className:'section-title',style:{margin:0}},ce('span',{className:'section-title-bar'}),'Metric sets ('+d.sets.length+') — clone forward, or build a new one'),
+        ctx.isAdmin?ce('button',{className:'btn btn-primary btn-sm',onClick:function(){setNewOpen(true);}},'+ New set'):null),
+      ce('div',{className:'note',style:{marginBottom:10}},ce('b',null,'Two ways to add a set.'),' ',ce('b',null,'Clone →'),' copies a set forward one year — same crop, same scenario. ',ce('b',null,'+ New set'),' builds any crop · season · scenario, the only way to start a scenario a crop has never had (e.g. a first ',ce('span',{className:'lot'},'plan'),'). Both write only ',ce('span',{className:'lot'},'farm_metric_sets'),' and its items — no migration, no deploy.'),
       ce('div',{className:'table-wrap'},
         ce('table',null,
           ce('thead',null,ce('tr',null,['Crop','Season','Scenario','Metrics',''].map(function(h){return ce('th',{key:h},h);}))),
@@ -1856,7 +1879,95 @@ function ReferenceDataScreen(ctx){
     ce('div',{style:{display:'flex',gap:4,marginBottom:12}},
       [['metrics','Metrics'],['rootstocks','Rootstocks'],['varieties','Varieties']].map(function(t){
         return ce('button',{key:t[0],className:'chip'+(tab===t[0]?' active':''),onClick:function(){setTab(t[0]);setFlash(null);}},t[1]);})),
-    body
+    body,
+    newOpen?ce(NewMetricSetModal,{ctx:ctx,metrics:d.metrics,sets:d.sets,
+      onClose:function(){setNewOpen(false);},
+      onDone:function(m){ setNewOpen(false); setTab('metrics'); setFlash({kind:'ok',t:m+' No migration, no deploy.'}); load(); }}):null
+  );
+}
+
+/* ── New metric set — build any crop · season · scenario from a template ── */
+function metricSources(metrics, sets, crop, scenario){
+  var same=(sets||[]).filter(function(s){return s.scenario===scenario;}).slice().sort(function(a,b){
+    var ac=a.product_id===crop?0:1, bc=b.product_id===crop?0:1; if(ac!==bc) return ac-bc; return b.season_year-a.season_year; });
+  var opts=[];
+  if(scenario==='plan'){
+    var planIds=(metrics||[]).filter(function(m){return m.role==='plan';}).map(function(m){return m.id;});
+    if(planIds.length) opts.push({id:'tpl_plan', label:'Standard plan template ('+planIds.length+' metrics)', cols:planIds});
+  }
+  same.forEach(function(s){ var ids=(s.farm_metric_set_items||[]).map(function(it){return it.metric_id;});
+    opts.push({id:'copy:'+s.id, label:'Copy from '+s.product_id+' · '+s.season_year+' · '+s.scenario+' ('+ids.length+')', cols:ids}); });
+  opts.push({id:'blank', label:'Blank — pick manually', cols:[]});
+  // default: same-crop existing set → plan template → any set → blank
+  var def; if(same[0]&&same[0].product_id===crop) def='copy:'+same[0].id;
+  else if(scenario==='plan'&&opts[0]&&opts[0].id==='tpl_plan') def='tpl_plan';
+  else if(same[0]) def='copy:'+same[0].id; else def='blank';
+  return {opts:opts, def:def};
+}
+function NewMetricSetModal(p){
+  var crop0=(p.ctx.crop&&p.ctx.crop!=='all')?p.ctx.crop:((p.ctx.products[0]||{}).id||'citrus');
+  var cs=useState(crop0); var crop=cs[0],setCrop=cs[1];
+  var ys=useState(String(p.ctx.season||'')); var year=ys[0],setYear=ys[1];
+  var ss=useState('plan'); var scenario=ss[0],setScenario=ss[1];
+  var initSrc=metricSources(p.metrics,p.sets,crop0,'plan');
+  var srcS=useState(initSrc.def); var sourceId=srcS[0],setSourceId=srcS[1];
+  function seed(cols){ var o={}; (cols||[]).forEach(function(id){o[id]=true;}); return o; }
+  var initCols=(initSrc.opts.filter(function(o){return o.id===initSrc.def;})[0]||{}).cols||[];
+  var ch=useState(seed(initCols)); var checked=ch[0],setChecked=ch[1];
+  var sh=useState(false); var showList=sh[0],setShowList=sh[1];
+  var bs=useState(false); var busy=bs[0],setBusy=bs[1];
+  var es=useState(null); var err=es[0],setErr=es[1];
+
+  var src=metricSources(p.metrics,p.sets,crop,scenario);
+  function reseed(id, opts){ var o=(opts||src.opts).filter(function(x){return x.id===id;})[0]; setChecked(seed(o?o.cols:[])); setSourceId(id); }
+  function onCrop(v){ setCrop(v); var s=metricSources(p.metrics,p.sets,v,scenario); reseed(s.def, s.opts); }
+  function onScenario(v){ setScenario(v); var s=metricSources(p.metrics,p.sets,crop,v); reseed(s.def, s.opts); }
+
+  var byRole={}; (p.metrics||[]).forEach(function(m){ (byRole[m.role]=byRole[m.role]||[]).push(m); });
+  var ordered=[]; ROLE_ORDER.forEach(function(r){ (byRole[r]||[]).forEach(function(m){ordered.push(m);}); });
+  Object.keys(byRole).forEach(function(r){ if(ROLE_ORDER.indexOf(r)<0)(byRole[r]||[]).forEach(function(m){ordered.push(m);}); });
+  var nSel=ordered.filter(function(m){return checked[m.id];}).length;
+
+  function create(){
+    var y=parseInt(year,10);
+    if(!y||y<2000||y>2100){ setErr('Enter a valid season year.'); return; }
+    var ids=ordered.filter(function(m){return checked[m.id];}).map(function(m){return m.id;});
+    if(!ids.length){ setErr('Pick at least one metric, or choose a template.'); return; }
+    setBusy(true); setErr(null);
+    supabase.from('farm_metric_sets').insert({product_id:crop,season_year:y,scenario:scenario}).select('id').single().then(function(ins){
+      if(ins.error){ setBusy(false); setErr(/duplicate|unique/i.test(ins.error.message)?(crop+' '+y+' '+scenario+' already exists.'):('Create failed: '+ins.error.message)); return; }
+      var items=ids.map(function(id,i){return {metric_set_id:ins.data.id,metric_id:id,sort_order:i+1};});
+      supabase.from('farm_metric_set_items').insert(items).then(function(ir){
+        setBusy(false);
+        if(ir.error){ setErr('Set created but items failed — add them or delete the empty set: '+ir.error.message); return; }
+        p.onDone('Created '+crop+' '+y+' '+scenario+' ('+items.length+' metrics).');
+      });
+    });
+  }
+
+  var list=ce('div',{className:'table-wrap',style:{maxHeight:240,overflowY:'auto',marginTop:8}},
+    ROLE_ORDER.filter(function(r){return byRole[r];}).map(function(r){ return ce('div',{key:r},
+      ce('div',{style:{fontSize:9.5,textTransform:'uppercase',letterSpacing:'.08em',color:'var(--text3)',fontWeight:700,padding:'8px 12px 3px',background:'var(--bg2)'}},r),
+      (byRole[r]||[]).map(function(m){ return ce('label',{key:m.id,style:{display:'flex',alignItems:'center',gap:10,padding:'7px 12px',borderTop:'1px solid var(--border)',cursor:'pointer'}},
+        ce('input',{type:'checkbox',checked:!!checked[m.id],onChange:function(e){ var o=Object.assign({},checked); if(e.target.checked)o[m.id]=true; else delete o[m.id]; setChecked(o); }}),
+        ce('span',{style:{flex:1,fontSize:13}},m.name_en),
+        ce('span',{className:'lot',style:{fontSize:11}},m.code)); }));
+    }));
+
+  return ce(Modal,{title:'New metric set',sub:'writes farm_metric_sets + items · admin only',onClose:p.onClose,busy:busy,
+    footer:[ce('button',{key:'c',className:'btn btn-secondary',onClick:p.onClose,disabled:busy},'Cancel'),
+            ce('button',{key:'ok',className:'btn btn-primary',onClick:create,disabled:busy},busy?'Creating…':'Create set')]},
+    err?ce('div',{className:'alert alert-fail',style:{marginBottom:10}},ce('span',null,'✕'),ce('div',null,err)):null,
+    ce('div',{className:'field-row'},
+      ce(Field,{label:'Crop'}, selx(crop,onCrop,(p.ctx.products||[]).map(function(pr){return {v:pr.id,l:pr.name||pr.id};}))),
+      ce(Field,{label:'Season year'}, txt(year,setYear,{inputMode:'numeric',placeholder:'2026'}))),
+    ce('div',{className:'field-row'},
+      ce(Field,{label:'Scenario'}, selx(scenario,onScenario,[{v:'plan',l:'plan'},{v:'actual',l:'actual'}])),
+      ce(Field,{label:'Start from'}, selx(sourceId,function(v){reseed(v);},src.opts.map(function(o){return {v:o.id,l:o.label};})))),
+    ce('div',{className:'form-hint',style:{marginTop:6}},'Columns are filled from “Start from”. You can just press ',ce('b',null,'Create'),' — open “Review & adjust” only to change them.'),
+    ce('button',{className:'chip',style:{marginTop:12},onClick:function(){setShowList(!showList);}}, (showList?'▾':'▸')+' Review & adjust columns · '+nSel+' selected'),
+    showList?list:null,
+    ce('div',{className:'note',style:{marginTop:12,background:'var(--green-bg)',borderColor:'var(--green-border)',color:'var(--green)'}},'On save: one farm_metric_sets row + '+nSel+' item rows. Same write path as Clone — no migration, no deploy.')
   );
 }
 
@@ -1893,8 +2004,8 @@ function ReconciliationScreen(ctx){
 
   // cost-centre tab body
   var ccBody;
-  if(tab==='missing') ccBody=ce('table',null, ce('thead',null,ce('tr',null,ce('th',null,'Block'),ce('th',null,'Farm'),ce('th',{className:'num'},'Area fed'))), ce('tbody',null, missing.slice(0,200).map(function(b){return ce('tr',{key:b.operational_block_id},ce('td',null,ce('span',{className:'lot'},b.operational_block_id)),ce('td',null,(b.farms&&b.farms.name)||b.farm_code),ce('td',{className:'num'},fmt(b.total_area_fed)));})));
-  else if(tab==='mismatch') ccBody=ce('table',null, ce('thead',null,ce('tr',null,ce('th',null,'Block'),ce('th',null,'Farm'),ce('th',{className:'num'},'Cost centre'),ce('th',null,'Expected'))), ce('tbody',null, mismatch.length?mismatch.map(function(b){return ce('tr',{key:b.operational_block_id},ce('td',null,ce('span',{className:'lot'},b.operational_block_id)),ce('td',null,(b.farms&&b.farms.name)||b.farm_code),ce('td',{className:'num'},ce('span',{className:'lot',style:{color:'var(--amber)'}},b.jde_cost_center_id)),ce('td',null,'…'+FARM_NUM[b.farm_code]+'…'));}):[ce('tr',{key:0},ce('td',{colSpan:4,style:{color:'var(--text3)'}},'No cost-centre / farm mismatches for this crop.'))]));
+  if(tab==='missing') ccBody=ce('table',null, ce('thead',null,ce('tr',null,ce('th',null,'Block'),ce('th',null,'Farm'),ce('th',{className:'num'},'Area fed'))), ce('tbody',null, missing.slice(0,200).map(function(b){return ce('tr',{key:b.operational_block_id},ce('td',null,ce('span',{className:'lot',title:b.operational_block_id},b.aydi_block_number||b.operational_block_id)),ce('td',null,(b.farms&&b.farms.name)||b.farm_code),ce('td',{className:'num'},fmt(b.total_area_fed)));})));
+  else if(tab==='mismatch') ccBody=ce('table',null, ce('thead',null,ce('tr',null,ce('th',null,'Block'),ce('th',null,'Farm'),ce('th',{className:'num'},'Cost centre'),ce('th',null,'Expected'))), ce('tbody',null, mismatch.length?mismatch.map(function(b){return ce('tr',{key:b.operational_block_id},ce('td',null,ce('span',{className:'lot',title:b.operational_block_id},b.aydi_block_number||b.operational_block_id)),ce('td',null,(b.farms&&b.farms.name)||b.farm_code),ce('td',{className:'num'},ce('span',{className:'lot',style:{color:'var(--amber)'}},b.jde_cost_center_id)),ce('td',null,'…'+FARM_NUM[b.farm_code]+'…'));}):[ce('tr',{key:0},ce('td',{colSpan:4,style:{color:'var(--text3)'}},'No cost-centre / farm mismatches for this crop.'))]));
   else { var byCC={}; B.forEach(function(b){ var k=b.jde_cost_center_id||'(none)'; var c=byCC[k]=byCC[k]||{n:0,a:0}; c.n++; c.a+=Number(b.total_area_fed||0); }); ccBody=ce('table',null, ce('thead',null,ce('tr',null,ce('th',null,'Cost centre'),ce('th',{className:'num'},'Blocks'),ce('th',{className:'num'},'Area fed'))), ce('tbody',null, Object.keys(byCC).sort().map(function(k){return ce('tr',{key:k},ce('td',null,ce('span',{className:'lot'},k)),ce('td',{className:'num'},byCC[k].n),ce('td',{className:'num'},fmt(Math.round(byCC[k].a))));}))); }
 
   return ce('div',null,
@@ -1920,7 +2031,8 @@ function ReconciliationScreen(ctx){
           ce('table',{style:{minWidth:'auto'}},
             ce('thead',null,ce('tr',null,ce('th',null,'Block'),ce('th',{className:'num'},'Book'),ce('th',{className:'num'},'Aero'),ce('th',{className:'num'},'Δ fed'),ce('th',{className:'num'},'Δ %'))),
             ce('tbody',null, areaSorted.map(function(b){var over=Math.abs(b.vpct)>10; return ce('tr',{key:b.operational_block_id},
-              ce('td',null,ce('span',{className:'lot'},b.operational_block_id)),
+              ce('td',null,ce('span',{className:'lot',title:b.operational_block_id},b.aydi_block_number||b.operational_block_id),
+                ce('div',{style:{fontSize:10,color:'var(--text3)',marginTop:1}}, (b.farms&&b.farms.name)||b.farm_code)),
               ce('td',{className:'num'},fmt(b.total_area_fed)),
               ce('td',{className:'num'},fmt(b.af)),
               ce('td',{className:'num'},fmt(b.vfed)),
@@ -2124,7 +2236,7 @@ function SeasonEntryScreen(ctx){
             var actual=parseFloat(metricVal(row,'actual_production')); var bn=parseFloat(bv);
             var tfed=(isFinite(actual)&&isFinite(bn)&&bn>0)?(actual/bn).toFixed(2):'';
             return ce('tr',{key:b.id},
-              ce('td',{className:'stickyc'}, ce('span',{className:'lot'},b.operational_block_id), ce('div',{className:'ar',dir:'auto',style:{fontSize:10,color:'var(--text3)',marginTop:1}}, (b.varieties&&b.varieties.name)||'')),
+              ce('td',{className:'stickyc'}, ce('span',{className:'lot',title:b.operational_block_id},b.aydi_block_number||b.operational_block_id), ce('div',{className:'ar',dir:'auto',style:{fontSize:10,color:'var(--text3)',marginTop:1}}, (b.varieties&&b.varieties.name)||'')),
               ce('td',null, ce('input',{className:'derived',readOnly:true,value:Number(b.total_area_fed).toFixed(2),title:'total_area_fed — lives on the block'})),
               ce('td',null, ce('input',{value:bv,disabled:!ctx.canWrite,style:blocked?{borderColor:'var(--red)',background:'var(--red-bg)'}:null,onChange:function(ev){editBearing(row,ev.target.value);}}),
                 src?ce('span',{className:'carr'+(src==='stated'?' st':'')}, src):null),
@@ -2503,7 +2615,7 @@ function NewBlockModal(p){
     total_area_fed:'',planted_area_fed:'',aerobotics_area_ha:'',trees:'',lifecycle:'bearing',jde:'',comments:'',geom:p.seedGeojson||null}); var v=f[0],setV=f[1];
   var mo=useState(!!p.seedGeojson); var showMap=mo[0],setShowMap=mo[1];
   var st=useState({busy:false,err:null}); var s=st[0],setS=st[1];
-  useEffect(function(){ supabase.from('farms').select('id,name,farm_code').eq('active',true).order('name').then(function(r){ setFarms(r.data||[]);
+  useEffect(function(){ supabase.from('farms').select('id,name,farm_code').eq('active',true).order('name').then(function(r){ setFarms((r.data||[]).filter(function(x){return x.farm_code&&String(x.farm_code).trim();}));
     if(p.seedGeojson){ var ha=geojsonHa(p.seedGeojson); if(ha!=null) setV(function(x){ return Object.assign({},x,{aerobotics_area_ha:x.aerobotics_area_ha||String(Math.round(ha*100)/100),total_area_fed:x.total_area_fed||String(Math.round(ha*2.38095*100)/100)}); }); }
   }); },[]);
   function up(k){ return function(val){ setV(Object.assign({},v,mkObj(k,val))); }; }
@@ -2606,7 +2718,7 @@ function AssignPanel(p){
   var suggest=(function(){ if(!p.centroid||!p.farmCentroids||!p.farmCentroids.length) return null;
     var best=null; p.farmCentroids.forEach(function(f){ var d=haversineKm(p.centroid,f); if(best==null||d<best.d) best={f:f,d:d}; });
     return (best&&best.d<8)?best:null; })();
-  useEffect(function(){ supabase.from('farms').select('id,name,farm_code').eq('active',true).order('name').then(function(r){ setFarms(r.data||[]); });
+  useEffect(function(){ supabase.from('farms').select('id,name,farm_code').eq('active',true).order('name').then(function(r){ setFarms((r.data||[]).filter(function(x){return x.farm_code&&String(x.farm_code).trim();})); });
     if(suggest) setFarmCode(suggest.f.code);
     else if(p.ctx.map.farm&&p.ctx.map.farm!=='all') setFarmCode(p.ctx.map.farm);
   },[]);
@@ -2916,12 +3028,12 @@ function BenchmarkScreen(ctx){
 
 /* ── Land Cloud mark (surveyed parcel): dashed boundary = total area, solid mint
    interior = bearing area. light=true → Teal & Sand (on white); else dark-bg mint. ── */
-function lcMark(size,light){
+function lcMark(size,light,animated){
   var bd=light?'#159490':'#5fc9c4', pl=light?'#0d6a68':'#8fe0ad';
-  return ce('svg',{width:size,height:size,viewBox:'0 0 64 64',fill:'none','aria-hidden':'true',style:{flex:'none',display:'block'}},
-    ce('path',{d:'M8 22 L27 6 L52 13 L58 36 L39 56 L14 48 Z',stroke:bd,strokeWidth:2.4,strokeLinejoin:'round',strokeDasharray:'6.5 5',opacity:0.9}),
-    ce('path',{d:'M19 25 L30 17 L45 21 L48 34 L36 45 L22 40 Z',fill:pl}),
-    ce('g',{fill:bd}, [[8,22],[27,6],[52,13],[58,36],[39,56],[14,48]].map(function(pt,i){ return ce('circle',{key:i,cx:pt[0],cy:pt[1],r:2.9}); })));
+  return ce('svg',{width:size,height:size,viewBox:'0 0 64 64',fill:'none','aria-hidden':'true',className:animated?'lc-anim':undefined,style:{flex:'none',display:'block'}},
+    ce('path',{className:'lc-ring',d:'M8 22 L27 6 L52 13 L58 36 L39 56 L14 48 Z',stroke:bd,strokeWidth:2.4,strokeLinejoin:'round',strokeDasharray:'6.5 5',opacity:0.9}),
+    ce('path',{className:'lc-core',d:'M19 25 L30 17 L45 21 L48 34 L36 45 L22 40 Z',fill:pl}),
+    ce('g',{fill:bd}, [[8,22],[27,6],[52,13],[58,36],[39,56],[14,48]].map(function(pt,i){ return ce('circle',{key:i,className:'lc-node',cx:pt[0],cy:pt[1],r:2.9}); })));
 }
 function initials(n){ n=(n||'').trim(); if(!n) return '—'; var p=n.split(/\s+/); return (((p[0]||'')[0]||'')+((p.length>1?(p[p.length-1][0]||''):''))).toUpperCase(); }
 // Workspace app-grid icon (3×3), matches the Commercial/CRM switch
@@ -2969,7 +3081,7 @@ function App(){
 
   // Match the static #lc-splash exactly (dark #0e3a3d, same mark + wordmark) so the
   // hand-off static-splash → React-boot is invisible — no background flash before login.
-  if(auth.phase==='boot') return ce('div',{style:{position:'fixed',inset:0,zIndex:9998,background:'#0e3a3d',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:16}}, lcMark(52,false), ce('div',{style:{fontFamily:'var(--font-display)',fontSize:22}}, ce('span',{style:{color:'#f4f1e8'}},'Dal'), ce('span',{style:{color:'#5fc9c4'}},'OS'), ce('span',{style:{color:'#f4f1e8'}},' Land Cloud')));
+  if(auth.phase==='boot') return ce('div',{style:{position:'fixed',inset:0,zIndex:9998,background:'#0e3a3d',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',gap:16}}, lcMark(52,false,true), ce('div',{style:{fontFamily:'var(--font-display)',fontSize:22}}, ce('span',{style:{color:'#f4f1e8'}},'Dal'), ce('span',{style:{color:'#5fc9c4'}},'OS'), ce('span',{style:{color:'#f4f1e8'}},' Land Cloud')));
   if(auth.phase==='login') return ce(Login,null);
   if(auth.phase==='noaccess') return ce(NoAccess,{email:(auth.session&&auth.session.user.email)});
 
