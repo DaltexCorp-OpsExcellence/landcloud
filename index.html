@@ -25,6 +25,7 @@
   --font-display:'DM Serif Display',serif;
   --font-body:'Instrument Sans','Noto Sans Arabic',sans-serif;
   --font-mono:'DM Mono','Noto Sans Arabic',monospace;
+  --aero:#6d3fd4;--nodata:#5f6b6a;
   --r:8px;--r2:12px;
   --sidebar-w:218px;
 }
@@ -178,6 +179,16 @@ tr:last-child td{border-bottom:none}
 .chip.active .cnt{background:rgba(255,255,255,.2);color:#fff}
 .pager{display:flex;gap:8px;align-items:center;justify-content:flex-end;margin-top:10px;font-size:12px;color:var(--text3)}
 tr.rowlink{cursor:pointer}
+/* Block Register: the table scrolls inside its own box so the header row can stay pinned */
+.reg-scroll{max-height:calc(100vh - 250px);min-height:320px;overflow:auto}
+.reg-scroll thead th{position:sticky;top:0;z-index:2;background:var(--card);box-shadow:inset 0 -2px 0 var(--border2)}
+.reg-scroll th:first-child,.reg-scroll td:first-child{position:sticky;left:0;z-index:1;background:var(--card);box-shadow:inset -1px 0 0 var(--border)}
+.reg-scroll thead th:first-child{z-index:3;box-shadow:inset -1px 0 0 var(--border),inset 0 -2px 0 var(--border2)}
+.reg-scroll tr:hover td:first-child{background:var(--bg)}
+.reg-scroll .fc{font-style:italic}
+.reg-scroll .stale{color:var(--amber)}
+.aero-cap{font-size:11px;color:var(--text3);margin:0 0 6px}
+@media (max-width:767px){.reg-scroll{max-height:calc(100dvh - 160px);min-height:280px}.reg-scroll td:first-child{max-width:84px}}
 tr.rowlink:hover td{background:var(--bg)}
 
 /* Slide-over / bottom sheet (§6.3) */
@@ -189,7 +200,7 @@ tr.rowlink:hover td{background:var(--bg)}
 .rawover table{min-width:0}
 .rawover .rmet{font-size:13px;color:var(--text)}
 .rawover .rmet .lot{margin-left:6px;color:var(--text3)}
-.drawer-head{position:sticky;top:0;background:var(--bg2);border-bottom:1px solid var(--border);padding:14px 18px;display:flex;align-items:center;gap:10px}
+.drawer-head{position:sticky;top:0;z-index:2;background:var(--bg2);border-bottom:1px solid var(--border);padding:14px 18px;display:flex;align-items:center;gap:10px}
 .drawer-head h2{font-family:var(--font-display);font-size:19px;font-weight:400}
 .drawer-body{padding:16px 18px}
 .drawer-x{margin-left:auto;background:none;border:1px solid var(--border2);border-radius:6px;width:28px;height:28px;color:var(--text2);font-size:16px;line-height:1}
@@ -737,13 +748,20 @@ function RegisterScreen(ctx){
   var pm=useState({}); var prodMap=pm[0],setProdMap=pm[1];   // block_id -> {y:last prod year, t:tonnes}
   var cs=useState({}); var chainSet=cs[0],setChainSet=cs[1];  // block_ids that belong to a replant lineage
   var nb=useState(false); var newOpen=nb[0],setNewOpen=nb[1];
+  var ex=useState(null); var exporting=ex[0],setExporting=ex[1];
+  var ee=useState(null); var expErr=ee[0],setExpErr=ee[1];
+  var asm=useState({}); var aeroSum=asm[0],setAeroSum=asm[1];      // block_id -> TrueFruit summary (Aerobotics)
+  var am=useState(null); var aeroIds=am[0],setAeroIds=am[1];    // block_ids with TrueFruit measurements
+  var asl=useState(false); var aeroLoading=asl[0],setAeroLoading=asl[1];
+  var als=useState(null); var aeroLastSync=als[0],setAeroLastSync=als[1];
+  var showAero = ctx.crop==='all' || ctx.crop==='citrus';       // TrueFruit covers citrus only
 
-  useEffect(function(){ setPage(0); }, [ctx.crop, search, chip, farmF]);
-  useEffect(function(){ load(); }, [ctx.crop, page, search, chip, farmF, chainSet]);
+  useEffect(function(){ setPage(0); setExpErr(null); }, [ctx.crop, search, chip, farmF]);
+  useEffect(function(){ load(); }, [ctx.crop, page, search, chip, farmF, chainSet, chip==='tf'?aeroIds:null]);
   useEffect(function(){ loadMeta(); }, [ctx.crop]);
 
-  function base(){
-    var sel='id,operational_block_id,aydi_block_number,product_id,farm_code,sector_code,plot_code,planting_year,total_area_fed,planted_area_fed,aerobotics_area_ha,jde_cost_center_id,rootstock_id,lifecycle,last_producing_season,farms(name),varieties(name,breeders(name)),farm_rootstocks(name)';
+  function base(selOverride){
+    var sel=selOverride||'id,operational_block_id,aydi_block_number,product_id,farm_code,sector_code,plot_code,planting_year,total_area_fed,planted_area_fed,aerobotics_area_ha,jde_cost_center_id,rootstock_id,lifecycle,last_producing_season,farms(name),varieties(name,breeders(name)),farm_rootstocks(name)';
     var query=supabase.from('farm_blocks').select(sel,{count:'exact'});
     if(ctx.crop!=='all') query=query.eq('product_id',ctx.crop);
     if(farmF) query=query.eq('farm_code',farmF);
@@ -755,14 +773,19 @@ function RegisterScreen(ctx){
       if(chip==='no_cc') query=query.is('jde_cost_center_id',null).in('lifecycle',ACTIVE_LC);
       if(chip==='no_aero') query=query.is('aerobotics_area_ha',null);
       if(chip==='no_root') query=query.is('rootstock_id',null);
+      if(chip==='tf') query=query.in('id', (aeroIds&&aeroIds.length)?aeroIds:['00000000-0000-0000-0000-000000000000']);
     }
     return query;
   }
+  var loadSeq=React.useRef(0);
   function load(){
+    var my=++loadSeq.current;   // ignore out-of-order responses when filters change quickly
     set(function(x){return Object.assign({},x,{loading:true,err:null});});
     base().order('operational_block_id').range(page*PAGE,page*PAGE+PAGE-1).then(function(r){
+      if(my!==loadSeq.current) return;
       if(r.error){ set({loading:false,err:r.error.message,rows:[],total:0}); return; }
       set({loading:false,err:null,rows:r.data||[],total:r.count||0});
+      if(showAero){ setAeroLoading(true); aeroBlockSummary((r.data||[]).map(function(b){return b.id;})).then(function(m){ if(my===loadSeq.current){ setAeroSum(m); setAeroLoading(false); } }); }
     });
   }
   function loadMeta(){
@@ -774,6 +797,11 @@ function RegisterScreen(ctx){
       cropEq(supabase.from('farm_blocks').select('id',{count:'exact',head:true})).is('rootstock_id',null).neq('lifecycle','retired'),
       cropEq(supabase.from('farm_blocks').select('id',{count:'exact',head:true})).eq('lifecycle','retired')
     ]).then(function(r){ setCounts(function(c){ return Object.assign({},c,{all:r[0].count||0,no_cc:r[1].count||0,no_aero:r[2].count||0,no_root:r[3].count||0,retired:r[4].count||0}); }); });
+    supabase.from('aero_orchards').select('synced_at').order('synced_at',{ascending:false}).limit(1).then(function(r){ if(r.data&&r.data[0]) setAeroLastSync(r.data[0].synced_at); });
+    aeroMeasuredBlocks().then(function(ids){ setAeroIds(ids);
+      if(!ids.length){ setCounts(function(c){ return Object.assign({},c,{tf:0}); }); return; }
+      cropEq(supabase.from('farm_blocks').select('id',{count:'exact',head:true})).in('id',ids).neq('lifecycle','retired')
+        .then(function(r){ setCounts(function(c){ return Object.assign({},c,{tf:r.count||0}); }); }); });
     supabase.from('farm_blocks').select('farm_code,farms(name)').then(function(r){
       var seen={}; (r.data||[]).forEach(function(x){ if(x.farm_code&&!seen[x.farm_code]) seen[x.farm_code]=(x.farms&&x.farms.name)||x.farm_code; });
       setFarms(Object.keys(seen).sort().map(function(fc){return {code:fc,name:seen[fc]};}));
@@ -803,6 +831,8 @@ function RegisterScreen(ctx){
               {k:'no_cc',label:'Missing cost centre',n:counts.no_cc},
               {k:'no_aero',label:'No Aerobotics',n:counts.no_aero}, {k:'no_root',label:'Rootstock blank',n:counts.no_root},
               {k:'retired',label:'↺ Retired',n:counts.retired} ];
+  if(showAero) chips.splice(chips.length-1,0,{k:'tf',label:'TrueFruit measured',n:counts.tf});
+  var aeroSyncNote = (showAero&&aeroLastSync) ? ce('span',{key:'as',style:{fontSize:11,color:'var(--text3)',marginLeft:4},title:'Aerobotics data is copied into Land Cloud once a day (05:30 Cairo). Size now / Coloured / Clean are measured at the last TrueFruit visit; italic columns are Aerobotics forecasts.'},'Aerobotics synced '+aeroDT(aeroLastSync)) : null;
   var pages=Math.max(1,Math.ceil(st.total/PAGE));
 
   return ce('div',null,
@@ -810,24 +840,26 @@ function RegisterScreen(ctx){
       ce('input',{className:'search',placeholder:'Search block ID or Aydi…',value:search,onChange:function(e){setSearch(e.target.value);}}),
       ce('select',{className:'tb-select',value:farmF,onChange:function(e){setFarmF(e.target.value);}},
         ce('option',{value:''},'All farms'), farms.map(function(fm){return ce('option',{key:fm.code,value:fm.code}, fm.name);})),
-      ce('button',{className:'btn btn-secondary btn-sm',onClick:function(){ exportCsv(base, prodMap); }},'Export CSV'),
+      ce('button',{className:'btn btn-secondary btn-sm',disabled:!!exporting||st.loading||!st.total,title:st.total?'Orchards Master Plot List (.xlsx) — block details + full yield history for the '+st.total+' blocks matching the current filters':'No blocks match the current filters',onClick:function(){
+        setExpErr(null); setExporting('Preparing…'); exportPlotList(base,{crop:ctx.crop,farm:farmF,search:search,chip:chip},setExporting).catch(function(e){ setExpErr('Export failed: '+(e&&e.message||e)); }).then(function(){ setExporting(null); }); }},
+        exporting||'Export'),
+      expErr?ce('span',{style:{fontSize:12,color:'var(--red)'}},expErr):null,
       ctx.canWrite?ce('button',{className:'btn btn-primary btn-sm',style:{marginLeft:'auto'},onClick:function(){ setNewOpen(true); }},'+ New block'):null
     ),
     ce('div',{className:'toolbar'}, chips.map(function(ch){
       return ce('button',{key:ch.label,className:'chip'+(chip===ch.k?' active':''),onClick:function(){setChip(ch.k);}},
         ch.label, ce('span',{className:'cnt'}, ch.n==null?'…':ch.n));
-    })),
+    }), aeroSyncNote),
     st.err ? ce(ErrorState,{msg:st.err,onRetry:load}) :
     st.loading ? ce(Loading,{rows:8}) :
     st.rows.length===0 ? ce('div',{className:'card'},ce(EmptyState,{title:'No blocks match',msg:(search||chip||farmF)?'Try clearing the search, chip, or farm filter.':'The register is empty for this crop.',action:(search||chip||farmF)?'Clear filters':null,onAction:function(){setSearch('');setChip(null);setFarmF('');}})) :
     ce('div',null,
-      ce('div',{className:'table-wrap'},
+      ce('div',{className:'table-wrap reg-scroll'},
         ce('table',null,
-          ce('thead',null,ce('tr',null,['Aydi','Block ID','Crop','Farm','Variety','Breeder','Rootstock','Planting yr','Total fed','Planted fed','Last season','Aero ha','Cost ctr','Status'].map(function(h){var numH={'Planting yr':1,'Total fed':1,'Planted fed':1,'Last season':1,'Aero ha':1,'Cost ctr':1};return ce('th',{key:h,style:numH[h]?{textAlign:'right'}:null},h);}))),
+          ce('thead',null,ce('tr',null,['Aydi','Crop','Farm','Variety','Breeder','Rootstock','Planting yr','Total fed','Planted fed','Last season','Aero ha','Cost ctr','Status'].concat(showAero?['Size now','Coloured (st 5+)','Clean (≤ slight)','Harvest count (fcst)','Harvest size forecast']:[]).map(function(h){var numH={'Planting yr':1,'Total fed':1,'Planted fed':1,'Last season':1,'Aero ha':1,'Cost ctr':1,'Size now':1,'Coloured (st 5+)':1,'Clean (≤ slight)':1};return ce('th',{key:h,style:numH[h]?{textAlign:'right'}:null},h);}))),
           ce('tbody',null, st.rows.map(function(b){
             return ce('tr',{key:b.id,className:'rowlink',onClick:function(){setSel(b);}},
-              ce('td',{style:{whiteSpace:'nowrap'}}, ce('span',{className:'lot',style:{fontWeight:600}}, b.aydi_block_number||'—')),
-              ce('td',{style:{whiteSpace:'nowrap'}}, ce('span',{className:'lot',style:{color:'var(--text3)'},title:'Operational block ID'}, b.operational_block_id)),
+              ce('td',{style:{whiteSpace:'nowrap'},title:'Block ID '+(b.operational_block_id||'—')}, ce('span',{className:'lot',style:{fontWeight:600}}, b.aydi_block_number||'—')),
               ce('td',null, ce('span',{style:{display:'inline-block',width:8,height:8,borderRadius:2,background:CROP_COLORS[b.product_id]||'#999',marginRight:6}}), b.product_id),
               ce('td',null, (b.farms&&b.farms.name)||b.farm_code),
               ce('td',{className:'ar',dir:'auto'}, (b.varieties&&b.varieties.name)||'—'),
@@ -844,7 +876,8 @@ function RegisterScreen(ctx){
               ce('td',{className:'num',style:b.jde_cost_center_id?null:{color:'var(--amber)'}}, b.jde_cost_center_id||'—'),
               ce('td',null, ce('span',{style:{display:'inline-flex',alignItems:'center',gap:6,flexWrap:'wrap'}},
                 ce('span',{className:'badge '+lcBadge(b.lifecycle),title:lcTip(b.lifecycle)}, lcLabel(b.lifecycle)),
-                chainSet[b.id]?ce('span',{title:'This plot has a replant lineage — open to see the timeline',style:{fontSize:10,fontWeight:600,color:'var(--accent)',border:'1px solid var(--accent2)',background:'color-mix(in srgb,var(--accent2) 12%,transparent)',borderRadius:20,padding:'1px 7px',whiteSpace:'nowrap'}},'↻ replanted'):null))
+                chainSet[b.id]?ce('span',{title:'This plot has a replant lineage — open to see the timeline',style:{fontSize:10,fontWeight:600,color:'var(--accent)',border:'1px solid var(--accent2)',background:'color-mix(in srgb,var(--accent2) 12%,transparent)',borderRadius:20,padding:'1px 7px',whiteSpace:'nowrap'}},'↻ replanted'):null)),
+              showAero ? aeroRegisterCells(aeroSum[b.id], b.product_id, aeroLoading) : null
             );
           }))
         )
@@ -860,14 +893,97 @@ function RegisterScreen(ctx){
   );
 }
 
-function exportCsv(base, prodMap){
-  prodMap=prodMap||{};
-  base().order('operational_block_id').range(0,9999).then(function(r){
-    var rows=r.data||[]; if(!rows.length) return;
-    var cols=['operational_block_id','product_id','farm_code','aydi_block_number','planting_year','total_area_fed','planted_area_fed','aerobotics_area_ha','jde_cost_center_id','lifecycle','last_season','last_prod_year','last_prod_t'];
-    var lines=[cols.join(',')].concat(rows.map(function(b){var pm=prodMap[b.id]||{};var ext={last_season:(b.lifecycle==='EXP'?'On':(b.last_producing_season==null?'':b.last_producing_season)),last_prod_year:pm.y==null?'':pm.y,last_prod_t:pm.t==null?'':pm.t};return cols.map(function(c){var v=(c in ext)?ext[c]:b[c];return v==null?'':(''+v).indexOf(',')>=0?'"'+v+'"':v;}).join(',');}));
-    var blob=new Blob([lines.join('\n')],{type:'text/csv'}); var a=document.createElement('a');
-    a.href=URL.createObjectURL(blob); a.download='farm_blocks.csv'; a.click();
+/* ── Register export: "Orchards Master Plot List" layout ──
+   One sheet per crop: block identity columns, then one column group per season (actual scenario).
+   Respects the register filters (crop, farm, search, chip) by reusing base(). Values come from
+   farm_blocks + v_farm_season_wide; the only derived cells are the per-year area (see README sheet)
+   and the t/fed rates. */
+var PL_AR={raw_to_packhouse:'فعلى خام محطة',export_packhouse:'فعلى صادر محطة',export_carton:'فعلى صادر كرتونة',export_supermarket:'سوبر ماركت',export_gifts:'هدايا',export_supermarket_gifts:'سوبر ماركت+هدايا',dry_weight:'الوزن الجاف',export_total:'اجمالى الصادر',packhouse_reject:'فعلى فرزة محطة',weight_loss:'فقد الوزن',weight_loss_damaged:'فقد الوزن+التالف',shortage_dryout:'عجز+جفاف',local_sales_combined:'مبيعات محلى',raw_to_traders:'مبيعات خام للتجار',trader_reject:'فرزة تاجر',field_reject_sales:'مبيعات فرزة ارض',farm_gate_sales:'فعلى بيع محلى',condemned:'اعدام',actual_production:'فعلى انتاج'};
+var PL_ORDER=['raw_to_packhouse','export_packhouse','export_carton','export_supermarket','export_gifts','export_supermarket_gifts','dry_weight','export_total','packhouse_reject','weight_loss','weight_loss_damaged','shortage_dryout','local_sales_combined','raw_to_traders','trader_reject','field_reject_sales','farm_gate_sales','condemned','actual_production'];
+var PL_RATE={raw_to_packhouse:1,export_packhouse:1,export_total:1,actual_production:1};
+var PL_PROD=['actual_production','raw_to_packhouse','export_packhouse','local_sales_combined','farm_gate_sales','field_reject_sales'];
+var PL_TABS=[['Citrus',['citrus']],['Grapes',['grapes']],['Mango&Pomegranate',['mango','pomegranate']],['Olives',['olives']],['Berries',['berries']]];
+function plPaged(mk, onPage){ var PG=1000, out=[];
+  return new Promise(function(res,rej){ (function pg(from){ mk().range(from,from+PG-1).then(function(r){
+    if(r.error){ rej(r.error); return; } var d=r.data||[]; out=out.concat(d); if(onPage) onPage(out.length);
+    if(d.length===PG) pg(from+PG); else res(out); }); })(0); }); }
+function exportPlotList(base, f, progress){
+  var sel='id,operational_block_id,aydi_block_number,product_id,farm_code,sector_code,plot_code,block_add,block_code,variety_code,planting_year,financial_block_id,jde_cost_center_id,rootstock_code,legacy_old_plot,tree_count_planted,tree_count_actual,last_producing_season,total_area_fed,planted_area_fed,aerobotics_area_ha,lifecycle,comments,farms(name),varieties(name),farm_rootstocks(name)';
+  if(!window.XLSX) return Promise.reject(new Error('Spreadsheet library still loading — try again in a moment.'));
+  progress('Loading blocks…');
+  return plPaged(function(){ return base(sel).order('operational_block_id'); }).then(function(blocks){
+    if(!blocks.length) throw new Error('No blocks match the current filters.');
+    var ids={}; blocks.forEach(function(b){ ids[b.id]=1; });
+    var prods={}; blocks.forEach(function(b){ prods[b.product_id]=1; }); var plist=Object.keys(prods);
+    progress('Loading yield history…');
+    return plPaged(function(){ var q=supabase.from('v_farm_season_wide').select('block_id,season_year,is_exp,metrics').eq('scenario','actual');
+        if(plist.length===1) q=q.eq('product_id',plist[0]); return q.order('block_id').order('season_year'); },
+      function(n){ progress('Loading yield history… '+n); })
+    .then(function(seas){
+      progress('Building workbook…');
+      var S={}; seas.forEach(function(w){ if(ids[w.block_id]) S[w.block_id+'|'+w.season_year]=w; });
+      var U=XLSX.utils, wb=U.book_new(), num=function(v){ return v==null||v===''?null:Number(v); }, r2=function(v){ return Math.round(v*100)/100; }, r1=function(v){ return Math.round(v*10)/10; };
+      var ID=['Crop','Farm','Sector','Old Plot','Farm Code','Sector Code','Plot Code','Block Add','Block Code','Variety Code','Year Code','Aydi Block Number','Financial Block ID','JD. E. Cost Center ID','Rootstock Code','Operational Block ID','Count','Rootstock','Variety','Planting Year','Number of trees','Last produc. season','Total Area','Area Planted','Aerobotics Area (ha)','Lifecycle','Comments'];
+      var summary=[];
+      PL_TABS.forEach(function(tab){
+        var bl=blocks.filter(function(b){ return tab[1].indexOf(b.product_id)>=0; }); if(!bl.length) return;
+        bl.sort(function(a,b){ var k=function(x){ return [x.product_id,(x.farms&&x.farms.name)||x.farm_code||'',x.sector_code||'',x.plot_code||'',x.block_add||'',x.planting_year||0].join('|'); }; return k(a)<k(b)?-1:k(a)>k(b)?1:0; });
+        var tabIds={}; bl.forEach(function(b){ tabIds[b.id]=1; }); var ys={};
+        seas.forEach(function(w){ if(tabIds[w.block_id]) ys[w.season_year]=1; });
+        var years=Object.keys(ys).map(Number).sort();
+        var ymet={}; years.forEach(function(y){ ymet[y]=PL_ORDER.filter(function(m){ return bl.some(function(b){ var w=S[b.id+'|'+y]; return w&&w.metrics&&w.metrics[m]!=null; }); }); if(ymet[y].indexOf('actual_production')<0) ymet[y].push('actual_production'); });
+        var cols=[]; years.forEach(function(y){ cols.push([y,'area']); cols.push([y,'pnp']); ymet[y].forEach(function(m){ cols.push([y,'val',m]); if(PL_RATE[m]) cols.push([y,'rate',m]); }); });
+        var row1=ID.map(function(){return null;}).concat(cols.map(function(c){return c[0];})).concat([null]);
+        var row2=ID.concat(cols.map(function(c){ return c[1]==='area'?'المساحة المنزرعة':c[1]==='pnp'?'منتج/غير منتج':c[1]==='val'?(PL_AR[c[2]]||c[2]):'معدل ف '+(PL_AR[c[2]]||c[2]); })).concat(['ملاحظات']);
+        var aoa=[row1,row2], tot={}, fb=0;
+        bl.forEach(function(b){
+          var pl=num(b.planted_area_fed), ta=num(b.total_area_fed);
+          var row=[ b.product_id.charAt(0).toUpperCase()+b.product_id.slice(1), (b.farms&&b.farms.name)||b.farm_code,
+            /^\d+$/.test(b.sector_code||'')?Number(b.sector_code):b.sector_code, b.legacy_old_plot||null,
+            b.farm_code,b.sector_code,b.plot_code,b.block_add,b.block_code,b.variety_code,
+            b.planting_year?String(b.planting_year).slice(-2):null, b.aydi_block_number,b.financial_block_id,b.jde_cost_center_id,
+            b.rootstock_code,b.operational_block_id,1,(b.farm_rootstocks&&b.farm_rootstocks.name)||null,(b.varieties&&b.varieties.name)||null,
+            b.planting_year, b.tree_count_actual!=null?b.tree_count_actual:b.tree_count_planted,
+            b.lifecycle==='EXP'?'On':(b.last_producing_season!=null?b.last_producing_season:null),
+            ta,pl,num(b.aerobotics_area_ha),lcLabel(b.lifecycle),b.comments||null ];
+          var notes=[];
+          cols.forEach(function(c){
+            var y=c[0], w=S[b.id+'|'+y]; if(!w){ row.push(null); return; }
+            var m=w.metrics||{}, prePlant=b.planting_year&&y<b.planting_year;
+            var area=prePlant?0:(pl||0), produced=PL_PROD.some(function(k){ return Number(m[k]||0)>0; });
+            var useTot=!prePlant && area===0 && produced && (ta||0)>0; if(useTot) area=ta;
+            if(c[1]==='area'){ row.push(area); tot[y+'|area']=(tot[y+'|area']||0)+(area||0); if(useTot){ fb++; notes.push(y+': planted area is 0 but the block produced — total area used'); } }
+            else if(c[1]==='pnp') row.push(w.is_exp?'P':'NP');
+            else if(c[1]==='val'){ var v=m[c[2]]; if(v==null){ row.push(null); } else { row.push(r2(Number(v))); tot[y+'|'+c[2]]=(tot[y+'|'+c[2]]||0)+Number(v); } }
+            else { var v2=m[c[2]]; row.push(v2==null?null:(area?r1(Number(v2)/area):'-')); }
+          });
+          row.push(notes.length?notes.join('; '):null); aoa.push(row);
+        });
+        var trow=ID.map(function(h,i){ return i===0?'TOTAL':(h==='Total Area'||h==='Area Planted'||h==='Aerobotics Area (ha)')?r2(bl.reduce(function(s,b){ return s+(num(b[{ 'Total Area':'total_area_fed','Area Planted':'planted_area_fed','Aerobotics Area (ha)':'aerobotics_area_ha'}[h]])||0); },0)):null; });
+        cols.forEach(function(c){ var y=c[0], a=tot[y+'|area']||0;
+          if(c[1]==='area') trow.push(r2(a)); else if(c[1]==='val') trow.push(tot[y+'|'+c[2]]==null?null:r1(tot[y+'|'+c[2]])); else if(c[1]==='rate') trow.push(a&&tot[y+'|'+c[2]]!=null?r1(tot[y+'|'+c[2]]/a):null); else trow.push(null); });
+        aoa.push(trow);
+        var ws=U.aoa_to_sheet(aoa);
+        ws['!cols']=row2.map(function(h,i){ return {wch: i===row2.length-1?50:(['Farm','Financial Block ID','Operational Block ID','Rootstock','Variety','Comments'].indexOf(h)>=0?16:9)}; });
+        ws['!autofilter']={ref:U.encode_range({s:{r:1,c:0},e:{r:aoa.length-2,c:row2.length-1}})};
+        U.book_append_sheet(wb, ws, tab[0]);
+        summary.push([tab[0], bl.length, years[0]||'', years[years.length-1]||'', fb]);
+      });
+      var chipName={retired:'Retired',replanted:'Replanted',no_cc:'Missing cost centre',no_aero:'No Aerobotics',no_root:'Rootstock blank'};
+      var readme=[['DalOS Land Cloud — Orchards Master Plot List (block details + yield history)'],[],
+        ['Exported', new Date().toISOString().slice(0,16).replace('T',' ')],
+        ['Filters','Crop: '+(f.crop==='all'?'All crops':f.crop)+' · Farm: '+(f.farm||'All farms')+' · Search: '+(f.search&&f.search.trim()?f.search.trim():'—')+' · List: '+(chipName[f.chip]||'Current (non-retired)')],
+        ['Source','farm_blocks + v_farm_season_wide (scenario = actual). Tonnages, P/NP and block details are stored DB values.'],
+        ['Per-year area','Not stored per season — the DB holds one planted area per block. Year area = block planted area; 0 for years before the planting year; where planted area is 0 but the block produced that year, total area is used (noted in ملاحظات).'],
+        ['Rates','معدل ف = metric ÷ year area (t/fed). TOTAL row rates = column total ÷ total area.'],
+        ['Last produc. season','"On" for EXP blocks (same as the register), otherwise the stored last producing season.'],
+        ['Columns per year','Only metrics recorded for that crop-year are shown, so the column set varies by year.'],
+        [],['Sheet','Blocks','First season','Last season','Area fallbacks']].concat(summary);
+      var rs=U.aoa_to_sheet(readme); rs['!cols']=[{wch:20},{wch:110},{wch:12},{wch:12},{wch:14}];
+      U.book_append_sheet(wb, rs, 'README'); wb.SheetNames.unshift(wb.SheetNames.pop());
+      var tag=[f.crop==='all'?'AllCrops':f.crop, f.farm||'', f.chip||''].filter(Boolean).join('_');
+      XLSX.writeFile(wb, 'Orchards_Master_Plot_List_'+tag+'_'+new Date().toISOString().slice(0,10)+'.xlsx');
+    });
   });
 }
 
@@ -1187,6 +1303,7 @@ function BlockDetail(p){
   var age = b.planting_year ? (new Date().getFullYear()-b.planting_year) : null;
   var chp=function(bg,bd,fg,t){ return ce('span',{key:t,style:{fontSize:11,fontWeight:500,borderRadius:20,padding:'2px 9px',border:'1px solid '+bd,background:bg,color:fg,whiteSpace:'nowrap'}},t); };
   var headChips=ce('div',{style:{display:'flex',gap:6,flexWrap:'wrap',marginTop:6}},
+    b.operational_block_id?ce('span',{className:'lot',title:'Block ID',style:{alignSelf:'center',userSelect:'all'}},b.operational_block_id):null,
     (b.varieties&&b.varieties.name)?chp('#f0e8ff','#c090e0','#6a10b0',b.varieties.name):null,
     (b.farm_rootstocks&&b.farm_rootstocks.name)?chp('var(--bg2)','var(--border2)','var(--text2)','rootstock '+b.farm_rootstocks.name):null,
     (function(){ var lc=b.lifecycle;
@@ -1296,6 +1413,7 @@ function BlockDetail(p){
         ),
         (variance!=null && Math.abs(variance)>10) ? ce('div',{className:'band'}, 'Area variance '+variance+'% exceeds ±10% — flag for reconciliation (§6.10).') : null,
         commentBand,
+        ce(AeroSection,{block:b}),
         kpiSection ? ce('div',{style:{marginTop:18}}, kpiSection) : null,
         lineageSection ? ce('div',{style:{marginTop:18}}, lineageSection) : null,
         replantNote,
@@ -1527,11 +1645,13 @@ function MapNavSub(props){
     farmRow('all','All farms',meta.total),
     meta.farms.map(function(f){ return farmRow(f.code,f.name,f.n); }),
     ce('div',{className:'sl'},'Colour by'),
-    [['crop','Crop type'],['age','Planting year'],['sec','Sector']].map(function(o){
+    [['crop','Crop type'],['age','Planting year'],['sec','Sector'],['size','Fruit size · TrueFruit']].map(function(o){
       return ce('div',{key:o[0],className:'ni'+(m.mode===o[0]?' on':''),onClick:function(){ m.setMode(o[0]); }}, o[1]); }),
     ce('div',{className:'sl'},meta.legendLabel),
     meta.mode==='age'
       ? ce('div',{className:'yrleg'}, ce('div',{className:'bar'}), ce('div',{className:'ends'}, ce('span',null,String(meta.yrMin)), ce('span',null,String(meta.yrMax))), ce('div',{style:{fontSize:9.5,color:'var(--sidebar-muted)',marginTop:4}},'older → younger · grey = no year'))
+      : meta.mode==='size'
+      ? ce('div',{className:'yrleg'}, ce('div',{className:'bar'}), ce('div',{className:'ends'}, ce('span',null,meta.yrMin+(meta.yrMin!=='—'?' mm':'')), ce('span',null,meta.yrMax+(meta.yrMax!=='—'?' mm':''))), ce('div',{style:{fontSize:9.5,color:'var(--sidebar-muted)',marginTop:4}},'smaller → bigger fruit (latest visit) · dashed outline = not measured · lemons and mandarins run smaller than oranges'))
       : meta.legend.map(function(l){ return ce('div',{key:l.key,className:'ni'+((meta.mode==='crop'&&m.off.indexOf(l.key)>=0)?' off':''),onClick:meta.mode==='crop'?function(){ var off=m.off.slice(); var i=off.indexOf(l.key); if(i>=0)off.splice(i,1); else off.push(l.key); m.setOff(off); }:null},
           ce('span',{className:'sw',style:{background:l.color}}), ce('span',null,l.label), ce('span',{className:'c'},l.n)); }),
     ce('div',{className:'navshow'}, meta.count)
@@ -1562,6 +1682,10 @@ function FarmMapScreen(ctx){
   var ag=useState(null); var assign=ag[0],setAssign=ag[1];
   var sry=useState(false); var seriesReady=sry[0],setSeriesReady=sry[1]; // per-block production series done paging in
   var bmp=useState({}); var brMap=bmp[0],setBrMap=bmp[1];   // variety name (lower) -> breeder name; v_farm_block_geom carries variety as text
+  var szm=useState({}); var sizeMap=szm[0],setSizeMap=szm[1];   // block_id -> latest TrueFruit visit (Aerobotics)
+  var sizeRef=React.useRef({}), sampleRef=React.useRef(null), flyingRef=React.useRef(false);   // flying = map zoom/pan animation in progress
+  var asu=useState(null); var aeroSel=asu[0],setAeroSel=asu[1];   // forecast summary for the selected block
+  useEffect(function(){ aeroSizeMap().then(function(m){ sizeRef.current=m||{}; setSizeMap(m||{}); }); },[]);
   useEffect(function(){ supabase.from('varieties').select('name,breeders(name)').then(function(r){
     if(r.error||!r.data) return; var m={}; r.data.forEach(function(v){ if(v.name&&v.breeders&&v.breeders.name) m[String(v.name).trim().toLowerCase()]=v.breeders.name; }); setBrMap(m); }); },[]);
   function breederOf(v){ if(!v) return null; return brMap[String(v).trim().toLowerCase()]||null; }
@@ -1606,16 +1730,19 @@ function FarmMapScreen(ctx){
     var years=scope.map(function(f){return f.properties.planting_year;}).filter(Boolean);
     var ymin=years.length?Math.min.apply(null,years):0, ymax=years.length?Math.max.apply(null,years):1;
     var secs=[]; scope.forEach(function(f){ var sc=secOf(f.properties); if(secs.indexOf(sc)<0) secs.push(sc); }); secs.sort();
+    var szs=scope.map(function(f){ var a=sizeRef.current[f.properties.id]; return a&&a.m; }).filter(function(v){return v!=null;});
+    var smin=szs.length?Math.min.apply(null,szs):0, smax=szs.length?Math.max.apply(null,szs):1;
     function col(p){ if(mode==='crop') return CROP_COLORS[p.product_id]||'#888';
       if(mode==='age') return rampColor(p.planting_year,ymin,ymax);
+      if(mode==='size'){ var a=sizeRef.current[p.id]; return (a&&a.m!=null)?rampColor(a.m,smin,smax):'#5f6b6a'; }
       return MAP_PALETTE[Math.max(0,secs.indexOf(secOf(p)))%MAP_PALETTE.length]; }
     var labels=L.layerGroup();
     var layer=L.geoJSON({type:'FeatureCollection',features:vis},{
-      style:function(f){ return {color:'#fff',weight:1.2,fillColor:col(f.properties),fillOpacity:0.62,opacity:0.9}; },
+      style:function(f){ var dim=mode==='size'&&!(sizeRef.current[f.properties.id]&&sizeRef.current[f.properties.id].m!=null); return {color:'#fff',weight:1.2,fillColor:col(f.properties),fillOpacity:dim?0.04:0.62,opacity:dim?0.7:0.9,dashArray:dim?'4 3':null}; },   // unmeasured = dashed outline only, so it never reads as a size
       onEachFeature:function(f,lyr){ var p=f.properties;
         lyr.on('mouseover',function(e){ lyr.setStyle({weight:2.4,fillOpacity:0.82}); lyr.bringToFront(); showHover(p,e.originalEvent); });
-        lyr.on('mouseout',function(){ lyr.setStyle({weight:1.2,fillOpacity:0.62}); hideHover(); });
-        lyr.on('click',function(){ selectBlock(p); try{ map.flyToBounds(lyr.getBounds(),{maxZoom:17,padding:[40,40],duration:0.6}); }catch(e){} });
+        lyr.on('mouseout',function(){ var dim=mode==='size'&&!(sizeRef.current[p.id]&&sizeRef.current[p.id].m!=null); lyr.setStyle({weight:1.2,fillOpacity:dim?0.04:0.62}); hideHover(); });
+        lyr.on('click',function(){ selectBlock(p); try{ flyingRef.current=true; map.once('moveend',function(){ flyingRef.current=false; }); map.flyToBounds(lyr.getBounds(),{maxZoom:17,padding:[40,40],duration:0.6}); }catch(e){ flyingRef.current=false; } });
         try{ labels.addLayer(L.marker(lyr.getBounds().getCenter(),{interactive:false,icon:L.divIcon({className:'',html:'<div class="lbl-div">'+(p.aydi_block_number||'')+'</div>',iconSize:[0,0]})})); }catch(e){}
       }});
     layer.addTo(map); layerRef.current=layer; labels.addTo(map); labelRef.current=labels;
@@ -1626,6 +1753,9 @@ function FarmMapScreen(ctx){
     if(!window.L){ set({loading:false,err:'Map library failed to load.',feats:[]}); return; }
     var map=L.map(boxRef.current,{preferCanvas:false,attributionControl:true}).setView([30.3,30.9],10);
     mapRef.current=map; setBase(map,'sat'); setSel(null); setPlot(null); setCov(null);
+    // Leaflet only re-measures on window resize; when the map box itself changes size (side panel filling,
+    // scrollbar, layout settling) tiles + plot fills stay sized to the old box → grey squares / fills cut off
+    var ro=null; try{ if(window.ResizeObserver){ ro=new ResizeObserver(function(){ if(mapRef.current) mapRef.current.invalidateSize({pan:false}); }); ro.observe(boxRef.current); } }catch(e){}
     // hand-drawn polygons (leaflet-draw): measure area, include in export
     try{ drawnRef.current=L.featureGroup().addTo(map);
       if(L.Draw){ map.on(L.Draw.Event.CREATED, function(e){
@@ -1675,11 +1805,33 @@ function FarmMapScreen(ctx){
       lr.data.forEach(function(e){ var pr=e.parent||{}; (mp[e.child_block_id]=mp[e.child_block_id]||[]).push({ pid:e.parent_block_id, event:e.event_type, variety:(pr.varieties&&pr.varieties.name)||'unknown', from:pr.planting_year, to:pr.last_producing_season }); });
       lineageRef.current=mp;
     });
-    return function(){ if(mapRef.current){ mapRef.current.remove(); mapRef.current=null; } };
+    return function(){ try{ if(ro) ro.disconnect(); }catch(e){} if(mapRef.current){ mapRef.current.remove(); mapRef.current=null; } };
   },[ctx.crop]);
 
-  useEffect(function(){ buildLayer(true); },[ctx.map.farm]);
+  useEffect(function(){ setSel(null); setPlot(null); buildLayer(true); },[ctx.map.farm]);   // new farm → clear the old selection
   useEffect(function(){ buildLayer(false); },[ctx.map.mode,ctx.map.off]);
+  useEffect(function(){ if(ctx.map.mode==='size') buildLayer(false); },[sizeMap]);
+  // TrueFruit: sample points + forecast summary for the selected block
+  useEffect(function(){ var map=mapRef.current;
+    if(sampleRef.current&&map){ map.removeLayer(sampleRef.current); sampleRef.current=null; }
+    setAeroSel(null);
+    if(!sel) return;
+    var a=sizeMap[sel.id], alive=true, id=sel.id;
+    if(a&&map&&window.L) supabase.from('aero_fruit_measurements').select('measurement_date,sample_positions').eq('orchard_id',a.oid).not('sample_positions','is',null).order('measurement_date',{ascending:false}).limit(1).then(function(r){
+      var sps=(r.data&&r.data[0]&&r.data[0].sample_positions)||[]; if(!alive||!sps.length) return; var g=L.layerGroup();
+      sps.forEach(function(sp,i){ if(sp.latitude==null||sp.longitude==null) return;
+        g.addLayer(L.circleMarker([sp.latitude,sp.longitude],{radius:6,color:'#fff',weight:2,fillColor:getComputedStyle(document.documentElement).getPropertyValue('--aero').trim()||'#6d3fd4',fillOpacity:0.95})
+          .bindTooltip('TrueFruit sample '+(i+1)+' · '+(sp.average_fruit_size_mm!=null?Number(sp.average_fruit_size_mm).toFixed(1)+' mm':'—')+' · '+(sp.count_fruit_measured||0)+' fruit')); });
+      // add only once the map has stopped moving: adding SVG shapes mid-zoom leaves Leaflet's renderer sized to an
+      // in-between view, which clips every plot fill along a straight line until the next pan
+      function addSamples(){ var mp=mapRef.current; if(!alive||!mp) return;
+        if(sampleRef.current) mp.removeLayer(sampleRef.current);
+        g.addTo(mp); sampleRef.current=g; }
+      if(flyingRef.current&&mapRef.current) mapRef.current.once('moveend',function(){ setTimeout(addSamples,0); }); else addSamples();
+      setAeroSel(function(cur){ return Object.assign({},cur||{},{nSamples:sps.length}); }); });
+    aeroBlockSummary([id]).then(function(m){ if(alive) setAeroSel(function(cur){ return Object.assign({},m[id]||{none:true},cur&&cur.nSamples?{nSamples:cur.nSamples}:{}); }); });
+    return function(){ alive=false; };
+  },[sel,sizeMap]);
   useEffect(function(){ if(mapRef.current) setBase(mapRef.current,basemap); },[basemap]);
 
   // report farm list / legend / count up to the sidebar sub-panel
@@ -1693,11 +1845,14 @@ function FarmMapScreen(ctx){
     if(mode==='crop'){ var cc={}; scope.forEach(function(f){ cc[f.properties.product_id]=(cc[f.properties.product_id]||0)+1; });
       legend=Object.keys(cc).sort(function(a,b){return cc[b]-cc[a];}).map(function(k){ return {key:k,label:fmCrop(k),color:CROP_COLORS[k]||'#888',n:cc[k]}; }); }
     else if(mode==='age'){ legendLabel='Planting year'; var ys=scope.map(function(f){return f.properties.planting_year;}).filter(Boolean); if(ys.length){ yrMin=Math.min.apply(null,ys); yrMax=Math.max.apply(null,ys); } }
+    else if(mode==='size'){ legendLabel='Average fruit size'; var zs=scope.map(function(f){ var a=sizeMap[f.properties.id]; return a&&a.m; }).filter(function(v){return v!=null;});
+      if(zs.length){ yrMin=Math.min.apply(null,zs).toFixed(1); yrMax=Math.max.apply(null,zs).toFixed(1); } }
     else { legendLabel='Sector'; var scn={}; scope.forEach(function(f){ var sc=secOf(f.properties); scn[sc]=(scn[sc]||0)+1; }); var ks=Object.keys(scn).sort();
       legend=ks.map(function(k){ return {key:k,label:'Sector '+k,color:MAP_PALETTE[ks.indexOf(k)%MAP_PALETTE.length],n:scn[k]}; }); }
     var ha=vis.reduce(function(a,f){return a+haOf(f.properties.total_area_fed);},0);
-    ctx.map.setMeta({farms:farms,total:feats.length,mode:mode,legend:legend,legendLabel:legendLabel,yrMin:yrMin,yrMax:yrMax,count:vis.length+' blocks · '+Math.round(ha)+' ha'});
-  },[st.feats,ctx.map.farm,ctx.map.mode,ctx.map.off]);
+    var measuredN=mode==='size'?scope.filter(function(f){ var a=sizeMap[f.properties.id]; return a&&a.m!=null; }).length:null;
+    ctx.map.setMeta({farms:farms,total:feats.length,mode:mode,legend:legend,legendLabel:legendLabel,yrMin:yrMin,yrMax:yrMax,count:vis.length+' blocks · '+Math.round(ha)+' ha'+(measuredN!=null?' · '+measuredN+' measured':'')});
+  },[st.feats,ctx.map.farm,ctx.map.mode,ctx.map.off,sizeMap]);
 
   function download(name,text,type){ var b=new Blob([text],{type:type}); var a=document.createElement('a'); a.href=URL.createObjectURL(b); a.download=name; a.click(); }
   function toggleDraw(){ var map=mapRef.current; if(!map||!L.Draw) return;
@@ -1832,12 +1987,14 @@ function FarmMapScreen(ctx){
         hover?ce('div',{className:'hc',style:{left:hover.x,top:hover.y}},
           ce('div',{className:'hc-h'}, ce('b',null,hover.p.aydi_block_number), ce('span',{style:{color:'var(--text3)',fontSize:10.5}}, fmCrop(hover.p.product_id)), ce('span',{className:'a'}, fmt(hover.p.total_area_fed)+' fed')),
           ce('div',{className:'hc-v'}, (hover.p.variety||'unknown')+(breederOf(hover.p.variety)?' · '+breederOf(hover.p.variety):'')+' · planted '+(hover.p.planting_year||'—')),
+          (sizeMap[hover.p.id]&&sizeMap[hover.p.id].m!=null)?ce('div',{className:'hc-v',style:{marginTop:-4,color:'var(--accent)'}},'Fruit '+sizeMap[hover.p.id].m.toFixed(1)+' mm · TrueFruit '+aeroD(sizeMap[hover.p.id].md)):null,
           spark(seriesRef.current[hover.p.id],false)
         ):null
       ),
       ce('div',{className:'mpanel'},
         assign?ce(AssignPanel,{geojson:assign.geojson,centroid:assign.centroid,farmCentroids:farmCentroids,ctx:ctx,onAttached:assignDone,onCancel:assignCancel}):null,
         ce('div',{className:'card'}, ce('div',{className:'section-title'},ce('span',{className:'section-title-bar'}),'Selected block'), selPanel),
+        (sel&&(sizeMap[sel.id]||(aeroSel&&!aeroSel.none)))?ce('div',{className:'card'}, ce('div',{className:'section-title'},ce('span',{className:'section-title-bar'}),'TrueFruit · Aerobotics'), aeroMapCard(sizeMap[sel.id],aeroSel)):null,
         ce('div',{className:'card'}, ce('div',{className:'section-title'},ce('span',{className:'section-title-bar'}),'Plot history'), plotPanel),
         ce('div',{className:'card'},
           ce('div',{className:'section-title'},ce('span',{className:'section-title-bar'}),'Coverage'),
@@ -2565,7 +2722,356 @@ function DataHealthScreen(ctx){
       blocking.length?blocking.map(issueRow):ce('div',{style:{fontSize:12,color:'var(--text3)',padding:'8px 2px'}},'✓ No blocking issues — the register loaded cleanly and the rollup is fresh.')),
     ce('div',{className:'card'},
       ce('div',{className:'section-title st-amber'},ce('span',{className:'section-title-bar'}),'Warnings — decide, then act'),
-      warnings.length?warnings.map(issueRow):ce('div',{style:{fontSize:12,color:'var(--text3)',padding:'8px 2px'}},'No warnings for this crop.'))
+      warnings.length?warnings.map(issueRow):ce('div',{style:{fontSize:12,color:'var(--text3)',padding:'8px 2px'}},'No warnings for this crop.')),
+    ce(AeroHealth,{ctx:ctx})
+  );
+}
+
+/* ── Aerobotics (sync-aerobotics → aero_* tables): drawer section + Data Health link panel ── */
+var AERO_PRODUCT={'Table Grapes':'grapes','Orange':'citrus','Soft Citrus':'citrus','Lemon':'citrus','Grapefruit':'citrus','Mango':'mango','Pomegranate':'pomegranate'};
+var AERO_BLEM=['#2e7d4f','#8fbf7a','#e3c26b','#d9822b','#8a3b2a'];   // Unblemished → Severe (not the app's error red)
+var AERO_COL=['#2f6b2f','#5f9a3a','#9bb83f','#d6c33c','#eeaa2c','#e7841f','#d4621a','#a8431a'];   // TrueFruit colour stage 1 = green … 8 = full colour (verified on the data: stage rises toward harvest)
+// TrueFruit derived shares: coloured = colour stage 5–8 (1 = green … 8 = full colour); clean = Unblemished + Slight
+function aeroColoured(dist){ if(!dist||!dist.length) return null; return dist.reduce(function(a,r){ return a+((+r.label>=5)?Number(r.percentage)||0:0); },0); }
+function aeroClean(dist){ if(!dist||!dist.length) return null; return dist.reduce(function(a,r){ return a+((r.label==='Unblemished'||r.label==='Slight')?Number(r.percentage)||0:0); },0); }
+function aeroD(iso,yr){ if(!iso) return '—'; var d=new Date(String(iso).length===10?iso+'T00:00:00':iso); return d.toLocaleDateString('en-GB',yr?{day:'numeric',month:'short',year:'numeric'}:{day:'numeric',month:'short'}); }
+function aeroDT(iso){ if(!iso) return '—'; var d=new Date(iso); return d.toLocaleDateString('en-GB',{day:'numeric',month:'short'})+' '+d.toLocaleTimeString('en-GB',{hour:'2-digit',minute:'2-digit'}); }
+function aeroNorm(s){ return String(s||'').toLowerCase().replace(/lemon|valencia|orange/g,'').replace(/[^a-z]/g,''); }
+// horizontal % bars: rows=[{label,pct,sub}]
+function aeroBars(rows){
+  var mx=Math.max.apply(null,rows.map(function(r){return r.pct;}).concat([0.001]));
+  return ce('div',null, rows.map(function(r,i){ var pk=r.pct===mx;
+    return ce('div',{key:i,style:{display:'flex',alignItems:'center',gap:8,fontSize:11.5,marginBottom:5}},
+      ce('span',{style:{width:74,flex:'none',fontFamily:'var(--font-mono)',color:'var(--text2)'}}, r.label),
+      ce('span',{style:{flex:1,height:13,background:'var(--bg2)',borderRadius:3,overflow:'hidden'}}, ce('span',{style:{display:'block',height:'100%',width:(r.pct/mx*100)+'%',background:pk?'var(--accent)':'color-mix(in srgb,var(--accent2) 60%,var(--bg2))',borderRadius:3}})),
+      ce('span',{style:{width:138,flex:'none',textAlign:'right',fontFamily:'var(--font-mono)',fontSize:11,color:'var(--text2)',whiteSpace:'nowrap'}}, r.pct.toFixed(1)+'%', r.sub?ce('span',{style:{color:'var(--text3)'}},' '+r.sub):null)); }));
+}
+function aeroSeg(rows,cols,lbl){
+  var nz=rows.filter(function(r){return Number(r.percentage)>0;});
+  return ce('div',null,
+    ce('div',{style:{display:'flex',height:14,borderRadius:4,overflow:'hidden',border:'1px solid var(--border)'}}, rows.map(function(r,i){ return Number(r.percentage)>0?ce('span',{key:i,title:lbl(r)+' '+r.percentage+'%',style:{display:'block',width:r.percentage+'%',background:cols[i%cols.length]}}):null; })),
+    ce('div',{style:{display:'flex',flexWrap:'wrap',gap:'3px 10px',marginTop:5,fontSize:11,color:'var(--text2)'}}, nz.map(function(r){ var i=rows.indexOf(r);
+      return ce('span',{key:i,style:{display:'inline-flex',alignItems:'center',gap:4}}, ce('span',{style:{width:8,height:8,borderRadius:2,background:cols[i%cols.length],display:'inline-block'}}), lbl(r), ce('span',{style:{color:'var(--text3)'}}, r.percentage+'%')); })));
+}
+// forecast avg-size curve: cur=[{d,v}] for the latest run; prev=[{d,v}] last season's run, aligned by week index
+function aeroCurve(cur,prev){
+  var W=460,H=160,x0=34,x1=448,top=16,base=128;
+  var vals=cur.map(function(p){return p.v;}).concat(prev.map(function(p){return p.v;}));
+  var lo=Math.floor(Math.min.apply(null,vals)-0.5), hi=Math.ceil(Math.max.apply(null,vals)+0.5); if(hi-lo<2) hi=lo+2;
+  var n=Math.max(cur.length,prev.length,2);
+  var X=function(i){return x0+i*(x1-x0)/(n-1);}, Y=function(v){return base-(v-lo)/(hi-lo)*(base-top);};
+  var els=[], step=Math.max(1,Math.round((hi-lo)/4));
+  for(var g=lo; g<=hi; g+=step){ els.push(ce('line',{key:'g'+g,x1:x0,x2:x1,y1:Y(g),y2:Y(g),stroke:'var(--border)'})); els.push(ce('text',{key:'t'+g,x:x0-5,y:Y(g)+3,textAnchor:'end',fontFamily:'var(--font-mono)',fontSize:8,fill:'var(--text3)'},g)); }
+  if(cur.length>1) els.push(ce('path',{key:'a',d:'M'+cur.map(function(p,i){return X(i)+','+Y(p.v);}).join(' L')+' L'+X(cur.length-1)+','+base+' L'+X(0)+','+base+'Z',fill:'color-mix(in srgb,var(--accent2) 14%,transparent)'}));
+  if(prev.length>1) els.push(ce('polyline',{key:'p',points:prev.map(function(p,i){return X(i)+','+Y(p.v);}).join(' '),fill:'none',stroke:'var(--amber)',strokeWidth:1.6,strokeDasharray:'4 3'}));
+  if(cur.length>1) els.push(ce('polyline',{key:'c',points:cur.map(function(p,i){return X(i)+','+Y(p.v);}).join(' '),fill:'none',stroke:'var(--accent)',strokeWidth:2.2}));
+  if(cur.length){ var L=cur.length-1;
+    els.push(ce('circle',{key:'c0',cx:X(0),cy:Y(cur[0].v),r:3,fill:'var(--accent)'}));
+    els.push(ce('circle',{key:'cL',cx:X(L),cy:Y(cur[L].v),r:3,fill:'var(--accent)'}));
+    els.push(ce('text',{key:'v0',x:X(0)+5,y:Y(cur[0].v)+13,fontFamily:'var(--font-mono)',fontSize:9,fill:'var(--accent)'},cur[0].v.toFixed(1)+' mm'));
+    els.push(ce('text',{key:'vL',x:X(L)-4,y:Y(cur[L].v)-7,textAnchor:'end',fontFamily:'var(--font-mono)',fontSize:9,fill:'var(--accent)'},cur[L].v.toFixed(1)+' mm'));
+    var ticks=[0,Math.round(L/3),Math.round(2*L/3),L].filter(function(v,i,a){return a.indexOf(v)===i;});
+    ticks.forEach(function(i){ els.push(ce('text',{key:'x'+i,x:X(i),y:base+14,textAnchor:'middle',fontFamily:'var(--font-mono)',fontSize:8.5,fill:'var(--text3)'},aeroD(cur[i].d))); });
+  }
+  return ce('svg',{viewBox:'0 0 '+W+' '+H,width:'100%',role:'img','aria-label':'Forecast average fruit size by week'},els);
+}
+
+// block_id -> latest TrueFruit visit {oid,m,md,n,samples} (cached for the session; Register chip + Farm Map size layer)
+var AERO_SIZEMAP=null;
+function aeroSizeMap(){
+  if(AERO_SIZEMAP) return AERO_SIZEMAP;
+  AERO_SIZEMAP=plPaged(function(){ return supabase.from('aero_fruit_measurements').select('orchard_id,measurement_date,avg_size_mm,fruit_count').order('orchard_id').order('measurement_date',{ascending:false}); }).then(function(rows){
+    var latest={}; (rows||[]).forEach(function(x){ if(!latest[x.orchard_id]) latest[x.orchard_id]=x; }); var ids=Object.keys(latest);
+    if(!ids.length) return {};
+    return supabase.from('aero_block_links').select('block_id,orchard_id').eq('status','linked').in('orchard_id',ids).then(function(l){
+      var out={}; (l.data||[]).forEach(function(x){ var m=latest[x.orchard_id]; if(!m) return; var cur=out[x.block_id];
+        if(!cur||m.measurement_date>cur.md) out[x.block_id]={oid:x.orchard_id,m:m.avg_size_mm!=null?Number(m.avg_size_mm):null,md:m.measurement_date,n:m.fruit_count}; });
+      return out; });
+  }).catch(function(){ AERO_SIZEMAP=null; return {}; });
+  return AERO_SIZEMAP;
+}
+function aeroMeasuredBlocks(){ return aeroSizeMap().then(function(m){ return Object.keys(m||{}); }); }
+// per-block summary for a page of blocks: latest TrueFruit size + latest forecast run's window and peak class
+function aeroBlockSummary(blockIds){
+  if(!blockIds||!blockIds.length) return Promise.resolve({});
+  return supabase.from('aero_block_links').select('block_id,orchard_id,aero_orchards(hectares)').eq('status','linked').in('block_id',blockIds).then(function(r){
+    if(r.error||!r.data||!r.data.length) return {};
+    var byBlock={};   // a block with 2+ orchards uses the largest
+    r.data.forEach(function(l){ var ha=Number(l.aero_orchards&&l.aero_orchards.hectares)||0, cur=byBlock[l.block_id]; if(!cur||ha>cur.ha) byBlock[l.block_id]={oid:l.orchard_id,ha:ha}; });
+    var oids=Object.keys(byBlock).map(function(b){return byBlock[b].oid;});
+    return Promise.all([
+      plPaged(function(){ return supabase.from('aero_fruit_measurements').select('orchard_id,measurement_date,avg_size_mm').in('orchard_id',oids).order('orchard_id').order('measurement_date',{ascending:false}); }).then(function(d){ return {data:d}; }),
+      supabase.from('aero_size_forecasts').select('orchard_id,processed_date,forecast_date,size_ranges,avg_size_mm').in('orchard_id',oids).not('size_ranges','is',null).order('processed_date',{ascending:false}).limit(2000),
+      supabase.from('hp_plan').select('block_id,harvest_start,harvest_end,seasons(name)').in('block_id',Object.keys(byBlock)).not('harvest_start','is',null),
+      plPaged(function(){ return supabase.from('aero_fruit_measurements').select('orchard_id,measurement_date,colour_dist,blemish_dist').in('orchard_id',oids).not('size_dist','is',null).order('orchard_id').order('measurement_date',{ascending:false}); }).then(function(d){ return {data:d}; })
+    ]).then(function(rr){
+      var grade={}; ((rr[3]&&rr[3].data)||[]).forEach(function(g){ if(!grade[g.orchard_id]) grade[g.orchard_id]=g; });
+      var plans={}; ((rr[2]&&rr[2].data)||[]).forEach(function(x){ (plans[x.block_id]=plans[x.block_id]||[]).push(x); });
+      var meas={}, split={};
+      (rr[0].data||[]).forEach(function(m){ if(!meas[m.orchard_id]) meas[m.orchard_id]=m; });
+      (rr[1].data||[]).forEach(function(f){ if(!split[f.orchard_id]) split[f.orchard_id]=f; });
+      var so=Object.keys(split), runs=so.map(function(o){return split[o].processed_date;}).filter(function(v,i,a){return a.indexOf(v)===i;});
+      var winQ=so.length ? plPaged(function(){ return supabase.from('aero_size_forecasts').select('orchard_id,processed_date,forecast_date,avg_size_mm').in('orchard_id',so).in('processed_date',runs).order('orchard_id').order('forecast_date'); }) : Promise.resolve([]);
+      return winQ.then(function(rows){
+        var win={};
+        rows.forEach(function(x){ var sp=split[x.orchard_id]; if(!sp||sp.processed_date!==x.processed_date) return;
+          var w=win[x.orchard_id]=win[x.orchard_id]||{s:x.forecast_date,e:x.forecast_date,ms:x.avg_size_mm,me:x.avg_size_mm};
+          if(x.forecast_date<=w.s){ w.s=x.forecast_date; w.ms=x.avg_size_mm; } if(x.forecast_date>=w.e){ w.e=x.forecast_date; w.me=x.avg_size_mm; } });
+        var out={};
+        Object.keys(byBlock).forEach(function(b){ var o=byBlock[b].oid, m=meas[o], sp=split[o], pk=null;
+          if(sp&&sp.size_ranges) sp.size_ranges.forEach(function(x){ var v=Number(x.percentage_of_total_count); if(!pk||v>pk.pct) pk={label:x.label,pct:v}; });
+          if(!m&&!sp) return;
+          var w=win[o]||null, plan=null;
+          // our Harvest Planner window for the season that overlaps Aerobotics' forecast weeks
+          (plans[b]||[]).forEach(function(pl){ if(!w||(pl.harvest_start<=w.e&&(pl.harvest_end||pl.harvest_start)>=w.s)) plan=pl; });
+          out[b]={oid:o, m:m&&m.avg_size_mm!=null?Number(m.avg_size_mm):null, md:m?m.measurement_date:null, peak:pk,
+            ws:w&&w.s, we:w&&w.e, fms:w&&w.ms!=null?Number(w.ms):(sp&&sp.avg_size_mm!=null?Number(sp.avg_size_mm):null), fme:w&&w.me!=null?Number(w.me):null, run:sp&&sp.processed_date,
+            ps:plan&&plan.harvest_start, pe:plan&&plan.harvest_end, pseason:plan&&plan.seasons&&plan.seasons.name,
+            col5:grade[o]?aeroColoured(grade[o].colour_dist):null, clean:grade[o]?aeroClean(grade[o].blemish_dist):null, gd:grade[o]&&grade[o].measurement_date};
+        });
+        return out;
+      });
+    });
+  }).catch(function(){ return {}; });
+}
+function aeroRegisterCells(a, product, loading){
+  var dash=function(t){ return ce('span',{style:{color:'var(--text3)'},title:t||null},'—'); };
+  if(!a&&loading){ var dots=function(k,n){ return ce('td',{key:k,className:n?'num':null,style:{color:'var(--text3)'}},'…'); };
+    return [dots('af',1),dots('ac',1),dots('ab',1),dots('ap'),dots('aw')]; }
+  if(!a) { var why=product==='citrus'?'No TrueFruit data for this block':'TrueFruit covers citrus only';
+    return [ce('td',{key:'af',className:'num'},dash(why)), ce('td',{key:'ac',className:'num'},dash(why)), ce('td',{key:'ab',className:'num'},dash(why)), ce('td',{key:'ap'},dash(why)), ce('td',{key:'aw'},dash(why))]; }
+  var gTip=a.gd?(' · TrueFruit visit '+aeroD(a.gd,true)):'';
+  var age=function(d){ return d?Math.floor((Date.now()-new Date(d+'T00:00:00').getTime())/864e5):null; };
+  var dline=function(d){ var g=age(d); return d?ce('div',{key:'d',className:g>14?'stale':null,style:{fontSize:10.5,color:g>14?null:'var(--text3)'},title:g>14?('Last TrueFruit visit was '+g+' days ago'):null},(g>14?'⚠ ':'')+aeroD(d)):null; };
+  return [
+    ce('td',{key:'af',className:'num',style:{whiteSpace:'nowrap'},title:a.md?'TrueFruit visit '+aeroD(a.md,true):null},
+      a.m!=null ? [ce('span',{key:'v'},a.m.toFixed(1)+' mm'), dline(a.md)] : dash('No measurement yet')),
+    ce('td',{key:'ac',className:'num',title:'Measured: share of fruit at colour stage 5–8 (1 = green, 8 = full colour)'+gTip}, a.col5!=null?[ce('span',{key:'v'},Math.round(a.col5)+'%'), dline(a.gd)]:dash('No colour reading')),
+    ce('td',{key:'ab',className:'num',title:'Measured: share of fruit Unblemished or Slight blemish (≥80% good · 60–80% watch · <60% poor)'+gTip}, a.clean!=null?[ce('span',{key:'v',style:{color:a.clean>=80?'var(--green)':(a.clean<60?'var(--red)':'var(--amber)')}},Math.round(a.clean)+'%'+(a.clean<60?' ▼':'')), dline(a.gd)]:dash('No blemish reading')),
+    ce('td',{key:'ap',className:'fc',style:{whiteSpace:'nowrap'},title:a.peak?'Forecast: most common size class (count) expected in the first harvest week Aerobotics forecasts. Lower count = bigger fruit.':null},
+      a.peak ? [ce('span',{key:'l',className:'lot',style:{color:'var(--accent)'}},a.peak.label), ce('span',{key:'p',style:{fontSize:11,color:'var(--text3)',marginLeft:5}},Math.round(a.peak.pct)+'%')] : dash('No forecast yet')),
+    ce('td',{key:'aw',className:'fc',style:{whiteSpace:'nowrap',fontSize:12,lineHeight:1.35},
+        title:a.ws?('Aerobotics TrueFruit size forecast (run of '+aeroD(a.run,true)+'): average fruit size predicted week by week from '+aeroD(a.ws,true)+' to '+aeroD(a.we,true)+'. Aerobotics picks these weeks from the variety’s usual harvest period — they are not our Harvest Planner dates.'+(a.ps?' Our plan ('+(a.pseason||'')+'): '+aeroD(a.ps,true)+' → '+aeroD(a.pe,true)+'.':'')):null},
+      a.ws ? [
+        ce('div',{key:'s',style:{color:'var(--text)'}}, ce('b',{style:{fontWeight:600}}, a.fms!=null?a.fms.toFixed(1)+' mm':'—'), ' at '+aeroD(a.ws)+(a.fme!=null&&Math.abs(a.fme-a.fms)>=0.1?' → '+a.fme.toFixed(1)+' mm':'')),
+        ce('div',{key:'w',style:{fontSize:10.5,color:'var(--text3)'}}, 'Aerobotics: '+aeroD(a.ws)+' → '+aeroD(a.we)),
+        a.ps ? ce('div',{key:'p',style:{fontSize:10.5,color:'var(--accent)'}}, 'Our plan: '+aeroD(a.ps)+' → '+aeroD(a.pe)) : null
+      ] : dash('No forecast yet'))
+  ];
+}
+
+// Farm Map side-panel card for the selected block (latest visit + forecast summary)
+function aeroMapCard(a, sum){
+  var kv=function(k,v){ return ce('div',null, ce('div',{className:'k'},k), ce('div',{className:'v m'},v)); };
+  return ce('div',null,
+    ce('div',{className:'kv'},
+      kv('Fruit size', a&&a.m!=null?a.m.toFixed(1)+' mm':'—'),
+      kv('Visit', a&&a.md?aeroD(a.md,true):'—'),
+      kv('Fruit · samples', a?((a.n||0)+' · '+((sum&&sum.nSamples)||'—')):'—'),
+      kv('Harvest count (fcst)', sum&&sum.peak?(sum.peak.label+' · '+Math.round(sum.peak.pct)+'%'):(sum?'—':'…')),
+      kv('Aerobotics forecast', sum&&sum.ws?((sum.fms!=null?sum.fms.toFixed(1)+' mm · ':'')+aeroD(sum.ws)+' → '+aeroD(sum.we)):(sum?'—':'…')),
+      kv('Our plan', sum&&sum.ps?(aeroD(sum.ps)+' → '+aeroD(sum.pe)):(sum?'—':'…'))),
+    (sum&&sum.nSamples)?ce('div',{className:'hint',style:{marginTop:8}},'Purple dots on the map are the TrueFruit sample points. Hover one for its size.'):null,
+    ce('div',{className:'hint',style:{marginTop:6}},'Full size split and forecast curve: Block Register → open this block.'));
+}
+
+function AeroSection(p){
+  var b=p.block;
+  var s=useState({loading:true}); var st=s[0],set=s[1];
+  useEffect(function(){ var alive=true; set({loading:true});
+    supabase.from('aero_block_links').select('orchard_id,source,aero_orchards(id,name,crop_type,cultivar,hectares,synced_at)').eq('block_id',b.id).eq('status','linked').then(function(r){
+      if(!alive) return;
+      if(r.error){ if(window.console) console.warn('aero links',r.error); set({loading:false,links:[]}); return; }   // tables absent / no access → hide quietly
+      var links=(r.data||[]).slice().sort(function(a,c){ return (Number(c.aero_orchards&&c.aero_orchards.hectares)||0)-(Number(a.aero_orchards&&a.aero_orchards.hectares)||0); });
+      if(!links.length){ set({loading:false,links:[]}); return; }
+      var ids=links.map(function(l){return l.orchard_id;}), oid=ids[0];
+      Promise.all([
+        supabase.from('aero_fruit_measurements').select('*').eq('orchard_id',oid).order('measurement_date',{ascending:false}).limit(400),
+        supabase.from('aero_size_forecasts').select('processed_date,forecast_date,avg_size_mm,size_ranges').eq('orchard_id',oid).order('processed_date',{ascending:false}).order('forecast_date').limit(600)
+      ]).then(function(rr){
+        if(!alive) return;
+        var e=rr.filter(function(x){return x.error;})[0]; if(e){ set({loading:false,err:e.error.message}); return; }
+        var fc=rr[1].data||[], runs={}; fc.forEach(function(f){ (runs[f.processed_date]=runs[f.processed_date]||[]).push(f); });
+        var keys=Object.keys(runs).sort().reverse(), latest=keys[0]||null, prevKey=null;
+        if(latest){ var cut=new Date(latest+'T00:00:00').getTime()-150*864e5; prevKey=keys.filter(function(k){return new Date(k+'T00:00:00').getTime()<=cut;})[0]||null; }
+        var visits=rr[0].data||[], det=visits.filter(function(v){return v.size_dist;})[0]||null, last=visits[0]||null;
+        var meas=last?Object.assign({},last, det&&det.measurement_date===last.measurement_date?{}:{size_dist:det&&det.size_dist,blemish_dist:det&&det.blemish_dist,colour_dist:det&&det.colour_dist,sample_positions:det&&det.sample_positions,_detDate:det&&det.measurement_date}):null;
+        set({loading:false,links:links,meas:meas,visits:visits,latest:latest,run:latest?runs[latest]:[],prev:prevKey?runs[prevKey]:[]});
+      });
+    });
+    return function(){ alive=false; };
+  },[b.id]);
+
+  var title=function(t,extra){ return ce('div',{className:'section-title',style:{marginTop:18}},ce('span',{className:'section-title-bar'}),t,extra?ce('span',{style:{textTransform:'none',letterSpacing:0,fontWeight:400,color:'var(--text3)'}},extra):null); };
+  if(st.loading) return ce('div',{style:{marginTop:18}}, ce('div',{className:'skel',style:{width:'40%'}}), ce('div',{className:'skel',style:{width:'80%',marginTop:8}}));
+  if(st.err) return ce('div',{className:'note',style:{marginTop:14}},'Aerobotics data could not load: '+st.err);
+  if(!st.links.length) return null;
+  var o=st.links[0].aero_orchards||{};
+  var tile=function(l,v,sub){ return ce('div',{className:'kpi'}, ce('div',{className:'kpi-label'},l), ce('div',{className:'kpi-val'},v), ce('div',{className:'kpi-sub'},sub)); };
+  var out=[];
+  out.push(title('Aerobotics',' — orchard '+o.name+' · '+(o.cultivar||o.crop_type||'')+' · '+fmt(o.hectares)+' ha'));
+  out.push(ce('div',{key:'sy',className:'aero-cap',style:{marginTop:-6}},'Synced '+aeroDT(o.synced_at)+(st.links.length>1?' · +'+(st.links.length-1)+' more orchard'+(st.links.length>2?'s':'')+' on this block':'')));
+
+  var m=st.meas;
+  if(m){
+    var sd=(m.size_dist||[]).slice().reverse().filter(function(r){return Number(r.percentage)>0;});
+    var peak=sd.reduce(function(a,r){ return (!a||Number(r.percentage)>Number(a.percentage))?r:a; },null);
+    var unb=(m.blemish_dist||[]).filter(function(r){return r.label==='Unblemished';})[0];
+    out.push(title('Fruit on the tree',' — TrueFruit '+aeroD(m.measurement_date,true)));
+    out.push(ce('div',{key:'mt',className:'kpi-grid',style:{gridTemplateColumns:'repeat(auto-fit,minmax(140px,1fr))',marginBottom:12}},
+      tile('Average size', m.avg_size_mm!=null?Number(m.avg_size_mm).toFixed(1)+' mm':'—', (m.fruit_count||0)+' fruit · '+((m.sample_positions||[]).length)+' sample points'),
+      tile('Most common size now', peak?peak.label:'—', peak?(Number(peak.percentage).toFixed(1)+'% of fruit · measured'):''),
+      (function(){ var cl=aeroClean(m.blemish_dist), sl=(m.blemish_dist||[]).filter(function(r){return r.label==='Slight';})[0];
+        return cl!=null?tile('Clean (≤ slight)', cl.toFixed(1)+'%', (unb?Number(unb.percentage).toFixed(0):0)+'% unbl · '+(sl?Number(sl.percentage).toFixed(0):0)+'% slight'):null; })(),
+      (function(){ var c5=aeroColoured(m.colour_dist); return c5!=null?tile('Coloured (st 5+)', c5.toFixed(1)+'%', 'stage 5–8 · 1 green → 8 full'):null; })()));
+    var vs=(st.visits||[]).filter(function(v){return v.avg_size_mm!=null;}).slice().reverse();
+    // this crop only: walk back from the latest visit; fruit only grows within a crop, so a visit
+    // more than 5 mm BIGGER than the one after it belongs to last season's (pre-harvest) crop
+    var cropStart=vs.length-1; while(cropStart>0 && Number(vs[cropStart-1].avg_size_mm)<=Number(vs[cropStart].avg_size_mm)+5) cropStart--;
+    vs=vs.slice(cropStart);
+    if(vs.length>1) out.push(ce('div',{key:'tr',style:{marginBottom:10}},
+      ce('div',{style:{fontSize:11,color:'var(--text3)',marginBottom:2}},'Size by visit, this crop — '+vs.length+' visits, '+aeroD(vs[0].measurement_date,true)+' → '+aeroD(vs[vs.length-1].measurement_date)),
+      aeroCurve(vs.map(function(v){return {d:v.measurement_date,v:Number(v.avg_size_mm)};}),[])));
+    if(sd.length) out.push(ce('div',{key:'mb'}, ce('div',{className:'aero-cap',title:'Count codes: number of fruit per standard carton — a LOWER number means BIGGER fruit (48 > 72 > 90). Mandarins use 1XXX, 1XX, 1X, 1…6 (1XXX biggest). Undersize/Oversize fall outside export sizes.'},'Size split (class · diameter mm) — lower count = bigger fruit ⓘ'+(m._detDate?' — from the '+aeroD(m._detDate)+' visit':'')),
+      aeroBars(sd.map(function(r){return {label:r.label,pct:Number(r.percentage),sub:String(r.bin_range||'').replace(' - ','–')};}))));
+    if((m.blemish_dist||[]).length||(m.colour_dist||[]).length) out.push(ce('div',{key:'bc',style:{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(220px,1fr))',gap:14,marginTop:10}},
+      ce('div',null, ce('div',{style:{fontSize:11,color:'var(--text3)',marginBottom:5},title:'Aerobotics blemish severity of the rind, in 5 steps: Unblemished, Slight, Moderate, Significant, Severe.'},'Blemish (rind marks)'), aeroSeg(m.blemish_dist||[],AERO_BLEM,function(r){return r.label;})),
+      ce('div',null, ce('div',{style:{fontSize:11,color:'var(--text3)',marginBottom:5},title:'Aerobotics colour stage of the rind: 1 = fully green, 8 = fully coloured. Fruit moves up the scale as it ripens.'},'Colour stage (1 green → 8 full colour)'), aeroSeg(m.colour_dist||[],AERO_COL,function(r){return 'stage '+r.label;}))));
+  }
+
+  if(st.run&&st.run.length){
+    var cur=st.run.filter(function(f){return f.avg_size_mm!=null;}).map(function(f){return {d:f.forecast_date,v:Number(f.avg_size_mm)};});
+    var prev=(st.prev||[]).filter(function(f){return f.avg_size_mm!=null;}).map(function(f){return {d:f.forecast_date,v:Number(f.avg_size_mm)};});
+    out.push(title('Aerobotics size forecast',' — run of '+aeroD(st.latest,true)+' · weeks chosen by Aerobotics, not our Harvest Planner dates'));
+    out.push(ce('div',{key:'fc'}, aeroCurve(cur,prev)));
+    out.push(ce('div',{key:'fl',style:{display:'flex',gap:12,fontSize:11,color:'var(--text2)',margin:'0 0 10px'}},
+      ce('span',null, ce('span',{style:{display:'inline-block',width:10,height:3,background:'var(--accent)',verticalAlign:'middle',marginRight:5}}),'This season'),
+      prev.length?ce('span',null, ce('span',{style:{display:'inline-block',width:10,height:3,background:'var(--amber)',verticalAlign:'middle',marginRight:5}}),'Last season’s forecast (same weeks)'):null));
+    if(prev.length&&cur.length){ var dlt=cur[cur.length-1].v-prev[prev.length-1].v;
+      if(Math.abs(dlt)>=0.3) out.push(ce('div',{key:'fd',style:{fontSize:12,color:'var(--text2)',marginBottom:10}},'Fruit is tracking '+Math.abs(dlt).toFixed(1)+' mm '+(dlt<0?'smaller':'larger')+' than last season’s forecast for this orchard.')); }
+    var first=st.run.filter(function(f){return f.size_ranges;})[0];
+    if(first){ var rg=first.size_ranges.filter(function(r){return Number(r.percentage_of_total_count)>0||Number(r.percentage_of_total_mass)>0;});
+      out.push(ce('div',{key:'pk'}, ce('div',{style:{fontSize:11,color:'var(--text3)',marginBottom:6}},'Expected pack-out at harvest start, '+aeroD(first.forecast_date)+' (share of fruit · share of weight)'),
+        aeroBars(rg.map(function(r){return {label:r.label,pct:Number(r.percentage_of_total_count),sub:'· '+Number(r.percentage_of_total_mass).toFixed(1)+'% wt'};})))); }
+  }
+  if(!m&&!(st.run&&st.run.length)) out.push(ce('div',{key:'nofruit',style:{fontSize:12,color:'var(--text3)'}},'No TrueFruit measurements or forecasts for this orchard yet (TrueFruit currently covers citrus only).'));
+  // tree census needs Aerobotics drone surveys (no access yet) — shown again once surveys exist
+  return ce('div',null,out);
+}
+
+function AeroHealth(p){
+  var ctx=p.ctx||{};
+  var s=useState({loading:true}); var st=s[0],set=s[1];
+  var sy=useState(null); var syncing=sy[0],setSyncing=sy[1];
+  var op=useState(null); var openPick=op[0],setOpen=op[1];   // null = first tab that has items
+  var pk=useState({}); var picks=pk[0],setPicks=pk[1];
+  var bz=useState(null); var busy=bz[0],setBusy=bz[1];
+  function pagedAll(mk){ var out=[]; return new Promise(function(res,rej){ (function pg(from){ mk().range(from,from+999).then(function(r){ if(r.error){rej(r.error);return;} out=out.concat(r.data||[]); if((r.data||[]).length===1000) pg(from+1000); else res(out); }); })(0); }); }
+  function load(){
+    set(function(prev){ return Object.assign({},prev,{loading:true,err:null}); });
+    Promise.all([
+      pagedAll(function(){ return supabase.from('aero_block_links').select('orchard_id,block_id,status,source,candidates,note,updated_at,aero_orchards(name,farm_id,crop_type,cultivar,hectares,active)').order('orchard_id'); }),
+      supabase.from('aero_farms').select('id,name'),
+      supabase.from('aero_farm_map').select('aero_farm_id,farm_id'),
+      supabase.from('aero_sync_runs').select('id,started_at,finished_at,ok,trigger,stats,error').order('started_at',{ascending:false}).limit(5)
+    ]).then(function(r){
+      var e=r.slice(1).filter(function(x){return x.error;})[0]; if(e) throw e.error;
+      var farmIds=(r[2].data||[]).map(function(x){return x.farm_id;});
+      return pagedAll(function(){ return supabase.from('farm_blocks').select('id,farm_id,aydi_block_number,product_id,aerobotics_area_ha,lifecycle,active,farms(name),varieties(name)').in('farm_id',farmIds.length?farmIds:['00000000-0000-0000-0000-000000000000']).eq('active',true).neq('lifecycle','retired').order('aydi_block_number'); })
+        .then(function(blocks){ set({loading:false,err:null,links:r[0],farms:r[1].data||[],fmap:r[2].data||[],runs:r[3].data||[],blocks:blocks}); });
+    }).catch(function(e){ set({loading:false,err:(e&&e.message)||String(e)}); });
+  }
+  useEffect(load,[]);
+  var un=useState(null); var undo=un[0],setUndo=un[1];   // {oid,name,msg} after a manual link/ignore
+  function syncNow(){ setSyncing('Syncing… this takes up to a minute');
+    supabase.functions.invoke('sync-aerobotics',{body:{}}).then(function(r){
+      if(r.error||(r.data&&r.data.ok===false)) setSyncing('Sync failed: '+((r.data&&r.data.error)||(r.error&&r.error.message)||'unknown error'));
+      else { var t=r.data&&r.data.stats||{}; setSyncing('Synced '+aeroDT(new Date().toISOString())+' — '+(t.orchards||0)+' orchards, '+(t.measurements_new||0)+' new visit details, '+(t.forecast_splits_new||0)+' new forecasts.'); load(); } }); }
+  function saveLink(oid,blockId,status,label){ setBusy(oid);
+    supabase.rpc('aero_set_block_link',{p_orchard_id:oid,p_block_id:blockId||null,p_status:status||null,p_note:null}).then(function(r){
+      setBusy(null); if(r.error){ setSyncing('Could not save: '+r.error.message); return; }
+      setUndo(status==='auto'?null:{oid:oid,msg:label||''}); load(); }); }
+
+  if(st.loading&&!st.links) return ce('div',{className:'card',style:{marginTop:10}}, ce(Loading,{rows:3}));
+  if(st.err) return ce('div',{className:'card',style:{marginTop:10}}, ce('div',{className:'section-title'},ce('span',{className:'section-title-bar'}),'Aerobotics link'), ce('div',{className:'note'},'Aerobotics data could not load: '+st.err));
+  var farmName={}; st.farms.forEach(function(f){ farmName[f.id]=f.name; });
+  var mapped={}; st.fmap.forEach(function(m){ (mapped[m.aero_farm_id]=mapped[m.aero_farm_id]||[]).push(m.farm_id); });
+  var blk={}; st.blocks.forEach(function(x){ blk[x.id]=x; });
+  var crop=ctx.crop&&ctx.crop!=='all'?ctx.crop:null;
+  var rows=st.links.filter(function(l){ var o=l.aero_orchards||{}; return o.active!==false && (!crop||AERO_PRODUCT[o.crop_type]===crop); });
+  var by=function(sv){ return rows.filter(function(l){return l.status===sv;}); };
+  var linked=by('linked'), amb=by('ambiguous'), unm=by('unmatched'), ign=by('ignored');
+  var areaDiff=linked.filter(function(l){ var b=blk[l.block_id], o=l.aero_orchards||{}; return b&&o.hectares!=null&&(b.aerobotics_area_ha==null||Math.abs(Number(b.aerobotics_area_ha)-Number(o.hectares))>0.05); });
+  var varDiff=linked.filter(function(l){ var b=blk[l.block_id], o=l.aero_orchards||{}; var a=aeroNorm(o.cultivar), c=aeroNorm(b&&b.varieties&&b.varieties.name); return a&&c&&a.indexOf(c)<0&&c.indexOf(a)<0; });
+  var manual=rows.filter(function(l){return l.source==='manual';});
+  var last=st.runs[0]||null;
+  var blabel=function(x,o){ var ha=x.aerobotics_area_ha!=null?Number(x.aerobotics_area_ha):null;
+    return x.aydi_block_number+' · '+((x.varieties&&x.varieties.name)||x.product_id)+' · '+((x.farms&&x.farms.name)||'')+(ha!=null?' · '+fmt(ha)+' ha':'')+(o&&o.hectares!=null&&ha!=null?' (orchard '+fmt(o.hectares)+' ha)':''); };
+  // confirm a manual link when area or variety clearly disagree
+  var linkWithCheck=function(l,blockId){ var o=l.aero_orchards||{}, b=blk[blockId]||{}, warn=[];
+    var ha=b.aerobotics_area_ha!=null?Number(b.aerobotics_area_ha):null, oh=o.hectares!=null?Number(o.hectares):null;
+    if(ha!=null&&oh!=null&&Math.abs(ha-oh)>0.2*Math.max(ha,oh)) warn.push('area '+fmt(oh)+' ha (Aerobotics) vs '+fmt(ha)+' ha (block)');
+    var a=aeroNorm(o.cultivar), c=aeroNorm(b.varieties&&b.varieties.name); if(a&&c&&a.indexOf(c)<0&&c.indexOf(a)<0) warn.push('variety '+o.cultivar+' vs '+(b.varieties&&b.varieties.name));
+    if(warn.length&&!window.confirm('Link orchard '+o.name+' to block '+b.aydi_block_number+'?\n\nThese differ: '+warn.join('; ')+'.')) return;
+    saveLink(l.orchard_id,blockId,null,'Linked orchard '+o.name+' → block '+b.aydi_block_number+'.'); };
+  var oCell=function(l){ var o=l.aero_orchards||{}; return [ce('td',{key:'f'}, farmName[o.farm_id]||o.farm_id), ce('td',{key:'n',style:{whiteSpace:'nowrap'}}, ce('span',{className:'lot',style:{fontWeight:600}}, o.name)), ce('td',{key:'c'}, (o.cultivar||'—'), ce('div',{style:{fontSize:11,color:'var(--text3)'}}, o.crop_type)), ce('td',{key:'h',className:'num'}, fmt(o.hectares))]; };
+  var pickCell=function(l,options){ var v=picks[l.orchard_id]||'';
+    return ce('td',{style:{whiteSpace:'nowrap'}},
+      ctx.canWrite ? [
+        ce('select',{key:'s',className:'tb-select',style:{width:280},value:v,onChange:function(e){ var n=Object.assign({},picks); n[l.orchard_id]=e.target.value; setPicks(n); }},
+          ce('option',{value:''},options.length?'Choose block…':'No candidate blocks'), options.map(function(x){ return ce('option',{key:x.id,value:x.id}, blabel(x,l.aero_orchards)); })),
+        ce('button',{key:'b',className:'btn btn-primary btn-sm',style:{marginLeft:6},disabled:!v||busy===l.orchard_id,onClick:function(){ linkWithCheck(l,v); }},'Link'),
+        ce('button',{key:'i',className:'btn btn-secondary btn-sm',style:{marginLeft:6},disabled:busy===l.orchard_id,onClick:function(){ saveLink(l.orchard_id,null,'ignored','Ignored orchard '+((l.aero_orchards||{}).name||'')+'.'); },title:'Not a Land Cloud block (e.g. a non-crop area)'},'Ignore')
+      ] : ce('span',{style:{color:'var(--text3)',fontSize:12}},'Admin decides')); };
+  var table=function(head,body){ return ce('div',{className:'table-wrap',style:{marginTop:8}}, ce('table',null, ce('thead',null,ce('tr',null,head.map(function(h,i){return ce('th',{key:i,style:['Aero ha','Stored ha','Δ ha'].indexOf(h)>=0?{textAlign:'right'}:null},h);}))), ce('tbody',null,body))); };
+  var empty=function(t){ return ce('div',{style:{fontSize:12,color:'var(--text3)',padding:'8px 2px'}},t); };
+  var lists={
+    ambiguous:[amb.length+' ambiguous','Same Aydi on more than one active block and the area tie-break could not decide. Pick the right block once; the link is kept on every sync.',
+      amb.length?table(['Farm','Orchard','Cultivar','Aero ha','Land Cloud block'],amb.map(function(l){ return ce('tr',{key:l.orchard_id}, oCell(l), pickCell(l,(l.candidates||[]).map(function(id){return blk[id];}).filter(Boolean))); })):empty('Nothing to resolve.')],
+    unmatched:[unm.length+' not in Land Cloud','No active block on the mapped farm has this Aydi and crop. Link it to the right block, or ignore it if it is not a crop block.',
+      unm.length?table(['Farm','Orchard','Cultivar','Aero ha','Land Cloud block'],unm.map(function(l){ var o=l.aero_orchards||{}, sec=String(o.name||'').split('-')[0], fids=mapped[o.farm_id]||[];
+        var opts=st.blocks.filter(function(x){ return fids.indexOf(x.farm_id)>=0 && String(x.aydi_block_number||'').split('-')[0]===sec && (!AERO_PRODUCT[o.crop_type]||x.product_id===AERO_PRODUCT[o.crop_type]); });
+        return ce('tr',{key:l.orchard_id}, oCell(l), pickCell(l,opts)); })):empty('Every orchard has a block.')],
+    area:[areaDiff.length+' area differences','Aerobotics hectares differ from the Aerobotics area stored on the block by more than 0.05 ha. Shown for review; updating block areas stays a separate, deliberate step.',
+      areaDiff.length?table(['Farm','Orchard','Cultivar','Aero ha','Stored ha','Δ ha'],areaDiff.map(function(l){ var b=blk[l.block_id], o=l.aero_orchards||{}, d=b.aerobotics_area_ha==null?null:Number(o.hectares)-Number(b.aerobotics_area_ha);
+        return ce('tr',{key:l.orchard_id}, oCell(l), ce('td',{className:'num'}, b.aerobotics_area_ha==null?ce('span',{style:{color:'var(--text3)'}},'—'):fmt(b.aerobotics_area_ha)), ce('td',{className:'num',style:{color:d==null?'var(--text3)':(d>0?'var(--green)':'var(--red)')}}, d==null?'new':((d>0?'+':'')+fmt(Math.round(d*100)/100)))); })):empty('All linked areas agree.')],
+    variety:[varDiff.length+' variety differences','Cultivar name in Aerobotics does not match the block’s variety. Some are naming differences only; confirm with agronomy before changing either system.',
+      varDiff.length?table(['Farm','Orchard','Aerobotics cultivar','Aero ha','Land Cloud variety'],varDiff.map(function(l){ var b=blk[l.block_id]; return ce('tr',{key:l.orchard_id}, oCell(l), ce('td',null,(b.varieties&&b.varieties.name)||'—')); })):empty('No variety differences.')],
+    manual:[manual.length+' manual links','Decisions made here. “Reset” hands the orchard back to automatic matching.',
+      manual.length?table(['Farm','Orchard','Cultivar','Aero ha','Linked to',''],manual.map(function(l){ var b=blk[l.block_id]; return ce('tr',{key:l.orchard_id}, oCell(l), ce('td',null, l.status==='ignored'?ce('span',{className:'badge badge-neutral'},'ignored'):(b?blabel(b):'—')),
+        ce('td',null, ctx.canWrite?ce('button',{className:'btn btn-secondary btn-sm',disabled:busy===l.orchard_id,onClick:function(){ saveLink(l.orchard_id,null,'auto'); }},'Reset'):null)); })):empty('No manual links yet.')]
+  };
+  var open=openPick||(['ambiguous','unmatched','area','variety','manual'].filter(function(k){ return {ambiguous:amb,unmatched:unm,area:areaDiff,variety:varDiff,manual:manual}[k].length; })[0]||'ambiguous');
+  var tab=function(k,label,n,col){ return ce('button',{key:k,className:'chip'+(open===k?' active':''),onClick:function(){setOpen(k);}}, label, ce('span',{className:'cnt',style:(n&&col&&open!==k)?{color:col}:null}, n)); };
+  var kpi=function(label,val,sub,color){ return ce('div',{className:'kpi'}, ce('div',{className:'kpi-label'},label), ce('div',{className:'kpi-val',style:color?{color:color}:null}, val), ce('div',{className:'kpi-sub'},sub)); };
+  var total=linked.length+amb.length+unm.length+ign.length;
+  var stats=(last&&last.stats)||{};
+  return ce('div',{className:'card',style:{marginTop:10}},
+    ce('div',{style:{display:'flex',alignItems:'center',gap:10,flexWrap:'wrap',marginBottom:10}},
+      ce('div',{className:'section-title',style:{margin:0}},ce('span',{className:'section-title-bar'}),'Aerobotics link'+(crop?' — '+crop:'')),
+      ce('span',{style:{fontSize:12,color:'var(--text3)'}}, last?('Last sync '+aeroDT(last.started_at)+' · '+(last.ok===true?'ok':(last.ok===false?'failed':'running'))+(stats.orchards!=null?' · '+stats.orchards+' orchards · '+(stats.measurements||0)+' visits checked · '+(stats.forecasts||0)+' forecast weeks':'')):'Never synced'),
+      ctx.canWrite?ce('button',{className:'btn btn-secondary btn-sm',style:{marginLeft:'auto'},disabled:syncing==='Syncing… this takes up to a minute',onClick:syncNow},syncing==='Syncing… this takes up to a minute'?'Syncing…':'Sync now'):null),
+    undo?ce('div',{className:'ok-band',style:{display:'flex',alignItems:'center',gap:10,marginTop:0}}, ce('span',null,undo.msg||'Saved.'),
+      ce('button',{className:'btn btn-secondary btn-sm',style:{marginLeft:'auto'},onClick:function(){ var o=undo.oid; setUndo(null); saveLink(o,null,'auto'); }},'Undo'),
+      ce('button',{className:'btn btn-secondary btn-sm',onClick:function(){ setUndo(null); }},'×')):null,
+    syncing?ce('div',{className:/failed|Could not/.test(syncing)?'alert alert-warn':'note',style:{marginBottom:10}},syncing):null,
+    (last&&last.ok===false)?ce('div',{className:'alert alert-warn',style:{marginBottom:10}},'Last sync failed: '+(last.error||'unknown error')):null,
+    ce('div',{className:'kpi-grid'},
+      kpi('Linked',linked.length,total?Math.round(linked.length/total*100)+'% of '+total+' orchards':'no orchards yet','var(--green)'),
+      kpi('Ambiguous',amb.length,'same Aydi on 2+ blocks',amb.length?'var(--amber)':null),
+      kpi('Not in Land Cloud',unm.length,'no matching block',unm.length?'var(--red)':null),
+      kpi('Area differs',areaDiff.length,'Aerobotics vs stored ha',areaDiff.length?'var(--amber)':null)),
+    ce('div',{className:'toolbar',style:{marginBottom:4}},
+      tab('ambiguous','Ambiguous',amb.length,'var(--amber)'), tab('unmatched','Not in Land Cloud',unm.length,'var(--red)'),
+      tab('area','Area differs',areaDiff.length,'var(--amber)'), tab('variety','Variety differs',varDiff.length,'var(--amber)'), tab('manual','Manual / ignored',manual.length,null)),
+    ce('div',{style:{fontSize:12,color:'var(--text2)',margin:'6px 0 0'}}, lists[open][1]),
+    lists[open][2],
+    st.runs.length?ce('div',{style:{marginTop:16}},
+      ce('div',{className:'section-title'},ce('span',{className:'section-title-bar'}),'Recent syncs'),
+      table(['Started','Trigger','Result','New fruit visits','New forecast splits','API calls'],st.runs.map(function(r){ var t=r.stats||{};
+        return ce('tr',{key:r.id}, ce('td',null,aeroDT(r.started_at)), ce('td',null,r.trigger||'—'),
+          ce('td',null, ce('span',{className:'badge '+(r.ok===true?'badge-pass':(r.ok===false?'badge-fail':'badge-neutral')),title:r.error||''}, r.ok===true?'ok':(r.ok===false?'failed':'running'))),
+          ce('td',{className:'num'}, t.measurements_new!=null?t.measurements_new:'—'), ce('td',{className:'num'}, t.forecast_splits_new!=null?t.forecast_splits_new:'—'), ce('td',{className:'num'}, t.api_calls!=null?t.api_calls:'—')); }))):null
   );
 }
 

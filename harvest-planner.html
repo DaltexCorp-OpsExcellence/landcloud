@@ -168,6 +168,15 @@ td.daycell.dtot2:hover{background:var(--bg2)}
 .dirtybadge{font-size:11px;color:var(--amber);background:var(--amber-bg);border:1px solid var(--amber-border);border-radius:20px;padding:2px 9px;font-weight:600;white-space:nowrap}
 .rotxt{font-family:var(--font-mono);font-size:12px;color:var(--text2)}
 .wchip.ro{cursor:default;opacity:.8}
+.aerocol{white-space:nowrap;min-width:92px}
+.aerocellin{font-family:var(--font-mono);font-size:11px;color:var(--text2);line-height:1.35}
+.aerocellin b{font-weight:600;color:var(--text)}
+.aerogap{font-size:10px;font-weight:600}.aerogap.early{color:var(--amber)}.aerogap.late{color:var(--accent)}
+.aeromute{color:var(--text3)}
+.aeroload{font-size:10px;font-style:italic;animation:aeropulse 1.2s ease-in-out infinite}
+@keyframes aeropulse{50%{opacity:.4}}
+@media(prefers-reduced-motion:reduce){.aeroload{animation:none}}
+.aeroline{font-size:10px;color:var(--text3);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:240px;font-family:var(--font-mono)}
 th.todayh{color:var(--amber);font-weight:700}
 .wkhead{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--text3);margin-bottom:10px;flex-wrap:wrap}
 .wkhead b{color:var(--text)}
@@ -340,6 +349,9 @@ body.present .cal-nameswrap td.rl{height:48px}
 body.present .cal .hcell small{font-size:11px}
 body.present .cal th,body.present .cal td.rl{font-size:13px}
 body.present .hidecol{display:none}
+body.present .aerocellin{font-size:14px}
+body.present .aerogap{font-size:12px}
+body.present .aerocol{min-width:130px}
 body.present .logwrap{max-height:calc(100vh - 150px);overflow:auto}
 body.present .daycell{padding:6px 3px}
 body.present .cin{font-size:18px;min-width:26px}
@@ -420,6 +432,8 @@ body.present .diff-row{font-size:15px}
 
       <div class="sec-title">By variety <span class="r">mirrors the planning sheet — budget → estimates → latest → actuals</span></div>
       <div class="table-wrap"><table id="ovVar"></table></div>
+
+      <div id="ovPack"></div>
 
       <div class="sec-title">By plot <span class="r">the detail rows behind each variety</span></div>
       <div class="table-wrap logwrap"><table id="ovPlot"></table></div>
@@ -709,10 +723,8 @@ function colOf(w,di,wkStart){ const dl=dayLabels(w)[di]; return {w:w,di:di,wd:dl
 function viewCols(){
   const m=editMode;
   const present=document.body.classList.contains('present');
-  if(!present){ // present always shows the full 2 weeks (single-day Today/Day views are edit-only)
-    if(m==='harv'&&actView==='today') return [colOf(CUR,CURDAY)];
-    if(m==='harv'&&actView==='day'){ const s=daySel||{w:CUR,di:CURDAY}; return [colOf(s.w,s.di)]; }
-  }
+  if(m==='harv'&&actView==='today'&&!present) return [colOf(CUR,CURDAY)]; // Today = edit-only, not on the wall
+  if(m==='harv'&&actView==='day'){ const s=daySel||{w:CUR,di:CURDAY}; return [colOf(s.w,s.di)]; } // drill-into-a-day works in present too
   const cols=[]; for(let k=0;k<2;k++){ const w=selWeek+k; if(w>WK.length-1)break; for(let di=0;di<7;di++) cols.push(colOf(w,di,di===0&&k>0)); }
   return cols;
 }
@@ -729,6 +741,7 @@ function dayTotalT(i,w,d){const a=getActual(i,w,d),b=actBreak[i+'|'+w+'|'+d]||{}
   return parts.length?parts.reduce((s,x)=>s+x,0):null;}
 // 2-week overview → click a day to edit its four-way split in the Day view
 function drillDay(w,di){ daySel={w,di}; actView='day'; renderLog(); }
+function backTo2wk(){ actView='weeks'; renderLog(); } // return from a drilled day to the 2-week overview (used on the Present wall)
 function dayEdit(el,cat){
   const q=el.id.split('_'),i=+q[1],w=+q[2],di=+q[3],k=i+'|'+w+'|'+di;
   const raw=el.value===''?null:parseFloat(el.value); const val=(raw==null||isNaN(raw))?null:raw;
@@ -801,11 +814,12 @@ function renderDaySplit(dc,opts){
   dayRecalc();
 }
 function renderLog(){
+  setTimeout(aeroEnsure,0);   // load Aerobotics TrueFruit for this season's plots once (re-renders when ready)
   const m=editMode; // 'plan' | 'harv'
   const present=document.body.classList.contains('present');
   const single=(!present&&m==='harv'&&(actView==='today'||actView==='day')); // present ignores single-day views → always 2 weeks
   const isToday=(!present&&m==='harv'&&actView==='today');
-  const wk2act=(!present&&m==='harv'&&actView==='weeks'); // 2-week Actual = read-only day totals, click a day to edit the split
+  const wk2act=(m==='harv'&&actView!=='day'&&(present||actView==='weeks')); // 2-week Actual (incl. Present wall) = read-only day totals + PH; click a day to drill into its split
   if(isToday) selWeek=CUR; // "Today" always lives in the current week
   if(present) selWeek=Math.max(0,Math.min(selWeek,WK.length-2)); // keep both weeks on-calendar for the wall
   const cols=viewCols(); curCols=cols;
@@ -826,22 +840,23 @@ function renderLog(){
     ? (isToday?'Today · ':'')+cols[0].wd+' '+cols[0].d+' '+cols[0].mon
     : (cols.length>7?('Weeks of '+WK[selWeek]+' – '+WK[Math.min(selWeek+1,WK.length-1)]):('Week of '+WK[selWeek]));
   document.getElementById('logHint').innerHTML=
-    m==='plan' ? '<b>Setting the plan.</b> Enter the <b>Planned</b> season total (t) — Planted area is from Land Cloud (read-only) and <b>Yield</b> is calculated (Planned ÷ Planted). Then click the <b>harvest-window</b> chip to set start/peak/end/shape — the tool draws the curve. Two weeks shown; day cells can be hand-tweaked (edited cells get a green outline). Faint number = actual harvest.'
+    m==='plan' ? '<b>Setting the plan.</b> Enter the <b>Planned</b> season total (t) — Planted area is from Land Cloud (read-only) and <b>Yield</b> is calculated (Planned ÷ Planted). Then click the <b>harvest-window</b> chip to set start/peak/end/shape — the tool draws the curve. Two weeks shown; day cells can be hand-tweaked (edited cells get a green outline). Faint number = actual harvest.'+(product==='citrus'&&aeroHP.state==='ok'?(Object.keys(aeroHP.by).length>=Math.max(3,plots.length*0.1)?' <span style="color:var(--accent)">●</span> Under each window: Aerobotics TrueFruit fruit size now · peak size class at harvest start · Aero ±d = days Aerobotics’ forecast starts before/after this window (hover for dates).':(aeroHP.skipped?' <span style="color:var(--accent)">●</span> Aerobotics fruit sizes are for the coming harvest ('+aeroShort(aeroHP.skipped.s)+' onward) — open that season to see them under each window.':'')):'')
   : isToday ? '<b>Logging today.</b> Each plot\'s pick is split by destination — To Packhouse (vs plan), Field Sorting, Local Sales, Waste. <b>Blank = not logged yet</b>; type <b>0</b> for “no pick”. Rows = plots in window today or already logged today. Plan fields are read-only here.'
   : actView==='day' ? '<b>Logging a day.</b> Pick any date on the right; one column — type each plot\'s tonnes and press <b>Enter</b> (or ↓) for the next plot. Blank = not logged; 0 = no pick. Plan fields are read-only here.'
   :         '<b>Two-week overview.</b> Each cell is the day\'s <b>total pick</b> (all four destinations); the faint <b>PH</b> = the To-Packhouse portion. Tap any day to open its four-way split and log it. Row total = tonnes picked over the fortnight; <b>vs plan</b> tracks To Packhouse.';
-  if(m==='harv' && (actView==='day'||actView==='today') && !document.body.classList.contains('present')){
+  if(m==='harv' && (actView==='day' || (actView==='today'&&!present))){
     renderDaySplit(cols[0],{today:isToday});
     document.getElementById('cellLegend').innerHTML=`<span>Destinations:</span> <b style="color:var(--accent)">To Packhouse</b> = export-bound (vs plan) · Field Sorting = field grade-out · Local Sales = raw to traders · Waste = condemned · <b>Day total</b> = sum`;
     if(isToday){
       let rowsN=0,loggedN=0;plots.forEach((p,i)=>{if(document.getElementById('c_'+i+'_'+CUR+'_'+CURDAY)){rowsN++;if(getActual(i,CUR,CURDAY)!=null)loggedN++;}});
       document.getElementById('modeBanner').innerHTML=`<span class="tag">Actual Harvest</span><span>Today · ${cols[0].wd} ${cols[0].d} — <b><span id="todayCnt">${loggedN} of ${rowsN}</span></b> in-window plots logged · split each plot's pick by destination. <b>vs plan</b> on To Packhouse (وارد محطة). Blank = not logged.</span>`;
     } else {
-      document.getElementById('modeBanner').innerHTML=`<span class="tag">Actual Harvest</span><span>Logging <b>${cols[0].wd} ${cols[0].d} ${cols[0].mon}</b> — split each plot's pick by destination. <b>vs plan</b> is on To Packhouse (وارد محطة). Blank = not logged.</span>`;
+      const back = present ? ` · <a href="#" onclick="backTo2wk();return false" style="color:#fff;text-decoration:underline;font-weight:600">← back to 2 weeks</a>` : '';
+      document.getElementById('modeBanner').innerHTML=`<span class="tag">Actual Harvest</span><span>Logging <b>${cols[0].wd} ${cols[0].d} ${cols[0].mon}</b> — split each plot's pick by destination. <b>vs plan</b> is on To Packhouse (وارد محطة). Blank = not logged.${back}</span>`;
     }
     updateDirtyBadge(); return;
   }
-  const NCOL=7+cols.length+2;
+  const AC=(AERO_ON()&&Object.keys(aeroHP.by).length>=Math.max(3,plots.length*0.1))||(product==='citrus'&&aeroHP.state==='loading'); const NCOL=7+(AC?1:0)+cols.length+2;
   const wkLbl = (cols.length>7?'2-wk ':'')+(m==='plan'?'plan':(wk2act?'total':'harv'));
   const varLbl= m==='plan'?'':'vs plan';
   document.getElementById('cellLegend').innerHTML=
@@ -850,7 +865,7 @@ function renderLog(){
     `<span><b style="color:var(--text2)">big</b> = ${m==='plan'?'planned tonnes you\'re setting':'harvest tonnes you\'re logging'} · <b style="color:var(--text2)">small</b> = ${m==='plan'?'actual harvest, for reference':'the plan, for reference'} · <b style="color:var(--text2)">all values in tonnes (t)</b></span>`;
   let head=`<tr>
     <th class="frozen f0">Farm</th><th class="frozen f1">Plot</th><th class="frozen f2">Var.</th>
-    <th class="num hidecol">Planted</th><th class="num hidecol">Yield</th><th class="num hidecol">Planned</th><th class="hidecol wincol">Harvest window</th>`
+    <th class="num hidecol">Planted</th><th class="num hidecol">Yield</th><th class="num hidecol">Planned</th><th class="hidecol wincol">Harvest window</th>${AC?'<th class="aerocol" title="Aerobotics TrueFruit: fruit size at the last field visit · most common size class (count) forecast for harvest start · Aero ±d = how many days Aerobotics\u2019 forecast starts before (−) or after (+) this window">TrueFruit</th>':''}`
     +cols.map(c=>`<th class="dayh${c.wkStart?' wkstart':''}${isToday?' todayh':''}">${isToday?'Today · ':''}${c.wd}<br>${c.d}</th>`).join('')
     +`<th class="num">${wkLbl}</th><th class="num">${varLbl}</th></tr>`;
   const groups=logGroups();
@@ -904,16 +919,16 @@ function renderLog(){
         <td class="num hidecol">${areaCell}</td>
         <td class="num hidecol">${yldCell}</td>
         <td class="num hidecol">${plannedInputCell}</td>
-        <td class="hidecol wincol">${wchip}</td>
+        <td class="hidecol wincol">${wchip}</td>${AC?`<td class="aerocol">${aeroCell(i,w)}</td>`:''}
         ${cells}
         <td class="num" id="wp_${i}">${wkTot}</td>
         <td class="num">${m==='plan'?'':varCell}</td>
       </tr>`;
     });
     grandWk+=gwk;
-    body+=`<tr class="subtot"><td class="stlab" colspan="3">${g.key} — subtotal</td><td class="hidecol"></td><td class="hidecol"></td><td class="hidecol"></td><td class="hidecol"></td>`+gsum.map((s,c)=>`<td class="num${cols[c].wkStart?' wkstart':''}" id="st_${gi}_${c}">${s}</td>`).join('')+`<td class="num" id="stwk_${gi}">${gwk}</td><td></td></tr>`;
+    body+=`<tr class="subtot"><td class="stlab" colspan="3">${g.key} — subtotal</td><td class="hidecol"></td><td class="hidecol"></td><td class="hidecol"></td><td class="hidecol"></td>${AC?'<td class="aerocol"></td>':''}`+gsum.map((s,c)=>`<td class="num${cols[c].wkStart?' wkstart':''}" id="st_${gi}_${c}">${s}</td>`).join('')+`<td class="num" id="stwk_${gi}">${gwk}</td><td></td></tr>`;
   });
-  body+=`<tr class="grandtot"><td class="stlab" colspan="3">All plots — total per day</td><td class="hidecol"></td><td class="hidecol"></td><td class="hidecol"></td><td class="hidecol"></td>`+grand.map((s,c)=>`<td class="num${cols[c].wkStart?' wkstart':''}" id="gt_${c}">${s}</td>`).join('')+`<td class="num" id="gtwk">${grandWk}</td><td></td></tr>`;
+  body+=`<tr class="grandtot"><td class="stlab" colspan="3">All plots — total per day</td><td class="hidecol"></td><td class="hidecol"></td><td class="hidecol"></td><td class="hidecol"></td>${AC?'<td class="aerocol"></td>':''}`+grand.map((s,c)=>`<td class="num${cols[c].wkStart?' wkstart':''}" id="gt_${c}">${s}</td>`).join('')+`<td class="num" id="gtwk">${grandWk}</td><td></td></tr>`;
   {const _lt=document.getElementById('logTable'); _lt.style.width=''; _lt.innerHTML='<thead>'+head+'</thead><tbody>'+body+'</tbody>';}
   // banner (structural mode statement + today completeness)
   document.getElementById('modeBanner').innerHTML= m==='plan'
@@ -1352,20 +1367,20 @@ function renderOv(){
   calBody+=`<tr>`+totW.map((v,i)=>{const h=heatRow(v,tmx);const past=i<=CUR;return `<td class="hcell" style="background:${h.bg};color:${h.c};font-weight:600">${past?`<b>${totA[i]||''}</b><small>/${v||0}</small>`:(v||'')}</td>`}).join('')+`</tr>`;
   document.getElementById('ovCal').innerHTML=calHead+calBody;
   // variety table — this-week columns first, estimates history at the end
-  let vh=`<tr><th class="frozen f0">Variety</th><th class="num">Plots</th><th class="num">Plan wk</th><th class="num">Actual wk</th><th class="num">Δ wk</th><th class="num">Next 2 wks</th><th class="num">Season plan</th><th class="num">Harvested</th><th class="num">% done</th><th class="num">Pace Δ</th><th class="num">Remaining</th><th class="num">Plan t/fed</th></tr>`;
+  let vh=`<tr><th class="frozen f0">Variety</th><th class="num">Plots</th><th class="num">Plan wk</th><th class="num">Actual wk</th><th class="num">Δ wk</th><th class="num">Next 2 wks</th><th class="num">Season plan</th><th class="num">Harvested</th><th class="num">% done</th><th class="num">Pace Δ</th><th class="num">Remaining</th><th class="num">Plan t/fed</th>${AERO_ON()?'<th class="num" title="Aerobotics TrueFruit — latest field visit, plan-weighted">Fruit size</th><th title="Most common size class expected at harvest start (TrueFruit forecast)">Harvest count (fcst)</th><th title="Weeks covered by the latest Aerobotics TrueFruit size forecast — Aerobotics picks these from the variety’s usual harvest period; they are not this planner’s harvest windows">Aerobotics forecast weeks</th>':''}</tr>`;
   const dchip=(v,base)=>{const on=Math.abs(v)<Math.max(3,base*0.06);const cls=on?'v-on':(v>0?'v-over':'v-under');return `<span class="varcell ${cls}">${on?'on':(v>0?'+':'')+Math.round(v)}</span>`;};
   let vb=A.map(a=>`<tr>
     <td class="frozen f0"><span class="vname">${a.v}</span></td><td class="num">${a.n}</td>
     <td class="num">${a.planWkTD.toLocaleString()}</td><td class="num"><b style="color:var(--text)">${a.actWk.toLocaleString()}</b></td><td class="num">${dchip(a.actWk-a.planWkTD,a.planWkTD)}</td>
     <td class="num">${a.next2.toLocaleString()}</td>
     <td class="num">${a.latest.toLocaleString()}</td><td class="num">${a.harv.toLocaleString()}</td><td class="num">${a.latest?Math.round(a.harv/a.latest*100):0}%</td>
-    <td class="num">${dchip(a.actTD-a.planTD,a.planTD)}</td><td class="num">${a.rem.toLocaleString()}</td><td class="num">${a.rate}</td>
+    <td class="num">${dchip(a.actTD-a.planTD,a.planTD)}</td><td class="num">${a.rem.toLocaleString()}</td><td class="num">${a.rate}</td>${aeroVarCells(a.v)}
     </tr>`).join('');
   const T={planWkTD:sum(A.map(a=>a.planWkTD)),actWk:sum(A.map(a=>a.actWk)),next2,latest:tPlan,harv:tHarv,rem:tPlan-tHarv,budget:tBud,jul:sum(A.map(a=>a.jul)),nov:sum(A.map(a=>a.nov)),planTD,actTD};
-  vb+=`<tr class="tot"><td class="frozen f0">Total</td><td class="num">${plots.length}</td><td class="num">${T.planWkTD.toLocaleString()}</td><td class="num">${T.actWk.toLocaleString()}</td><td class="num">${dchip(T.actWk-T.planWkTD,T.planWkTD)}</td><td class="num">${T.next2.toLocaleString()}</td><td class="num">${T.latest.toLocaleString()}</td><td class="num">${T.harv.toLocaleString()}</td><td class="num">${T.latest?Math.round(T.harv/T.latest*100):0}%</td><td class="num">${dchip(T.actTD-T.planTD,T.planTD)}</td><td class="num">${T.rem.toLocaleString()}</td><td></td></tr>`;
+  vb+=`<tr class="tot"><td class="frozen f0">Total</td><td class="num">${plots.length}</td><td class="num">${T.planWkTD.toLocaleString()}</td><td class="num">${T.actWk.toLocaleString()}</td><td class="num">${dchip(T.actWk-T.planWkTD,T.planWkTD)}</td><td class="num">${T.next2.toLocaleString()}</td><td class="num">${T.latest.toLocaleString()}</td><td class="num">${T.harv.toLocaleString()}</td><td class="num">${T.latest?Math.round(T.harv/T.latest*100):0}%</td><td class="num">${dchip(T.actTD-T.planTD,T.planTD)}</td><td class="num">${T.rem.toLocaleString()}</td><td></td>${AERO_ON()?'<td></td><td></td><td></td>':''}</tr>`;
   document.getElementById('ovVar').innerHTML=vh+vb;
   // plot table — from the same model
-  let ph=`<tr><th class="frozen of0">Farm</th><th class="frozen of1">Plot</th><th class="frozen of2">Variety</th><th>Status</th><th class="num">Area</th><th class="num">Season plan</th><th class="num">Harvested</th><th class="num">% done</th><th class="num">Remaining</th></tr>`;
+  let ph=`<tr><th class="frozen of0">Farm</th><th class="frozen of1">Plot</th><th class="frozen of2">Variety</th><th>Status</th><th class="num">Area</th><th class="num">Season plan</th><th class="num">Harvested</th><th class="num">% done</th><th class="num">Remaining</th>${AERO_ON()?'<th class="num">Fruit size</th><th>Harvest count (fcst)</th>':''}</tr>`;
   const psorted=plots.map((p,i)=>({p,i})).sort((a,b)=>a.p.v.localeCompare(b.p.v)||a.p.f.localeCompare(b.p.f));
   let pb=psorted.map(({p,i})=>{const latest=sum(WK.map((_,w)=>sum(WD.map((__,d)=>dayPlan(i,w,d))))); const harv=sumTo(getActual,i,CUR,CURDAY);
     return `<tr>
@@ -1373,9 +1388,131 @@ function renderOv(){
     <td><span class="pill p-${p.pnp}">${p.pnp}</span></td>
     <td class="num">${p.area.toFixed(1)}</td>
     <td class="num"><b style="color:var(--text)">${latest.toLocaleString()}</b></td>
-    <td class="num">${harv.toLocaleString()}</td><td class="num">${latest?Math.round(harv/latest*100):0}%</td><td class="num">${(latest-harv).toLocaleString()}</td>
+    <td class="num">${harv.toLocaleString()}</td><td class="num">${latest?Math.round(harv/latest*100):0}%</td><td class="num">${(latest-harv).toLocaleString()}</td>${aeroPlotCells(p.blockId)}
     </tr>`;}).join('');
   document.getElementById('ovPlot').innerHTML='<thead>'+ph+'</thead><tbody>'+pb+'</tbody>';
+  document.getElementById('ovPack').innerHTML=aeroPackHTML(A);
+  aeroEnsure();
+}
+
+// ---------- AEROBOTICS TrueFruit (read-only, aero_* tables; filled by the sync-aerobotics edge fn) ----------
+const esc=v=>String(v==null?'':v).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+let aeroHP={key:null,state:'idle',by:{}};   // by: blockId -> {m, md, ranges:[{label,c,w}], ws, we}
+const fmt1=v=>(Math.round(v*10)/10).toLocaleString();
+const AERO_ON=()=>product==='citrus'&&aeroHP.state==='ok'&&Object.keys(aeroHP.by).length>0;
+async function aeroPaged(mk){const out=[];for(let from=0;;from+=1000){const {data,error}=await mk().range(from,from+999);if(error)throw error;out.push(...(data||[]));if(!data||data.length<1000)break;}return out;}
+async function aeroEnsure(){
+  const key=product+'|'+(SEASON&&SEASON.id)+'|'+plots.length;
+  if(product!=='citrus'||aeroHP.key===key) return;
+  aeroHP={key,state:'loading',by:{}};
+  if(page==='log'){ const ae=document.activeElement; if(!(ae&&/^(INPUT|TEXTAREA)$/.test(ae.tagName)&&ae.closest&&ae.closest('#logTable'))) renderLog(); }   // show the column in its loading state
+  try{
+    const ids=plots.map(p=>p.blockId).filter(Boolean), links=[];
+    for(let i=0;i<ids.length;i+=150){const {data,error}=await SB.from('aero_block_links').select('block_id,orchard_id,aero_orchards(hectares)').eq('status','linked').in('block_id',ids.slice(i,i+150));if(error)throw error;links.push(...(data||[]));}
+    const byBlock={};links.forEach(l=>{const ha=Number(l.aero_orchards&&l.aero_orchards.hectares)||0,c=byBlock[l.block_id];if(!c||ha>c.ha)byBlock[l.block_id]={oid:l.orchard_id,ha};});
+    const oids=[...new Set(Object.values(byBlock).map(x=>x.oid))];
+    if(!oids.length){aeroHP.state='ok';return;}
+    const [ms,sp]=await Promise.all([
+      aeroPaged(()=>SB.from('aero_fruit_measurements').select('orchard_id,measurement_date,avg_size_mm').in('orchard_id',oids).order('orchard_id').order('measurement_date',{ascending:false})),
+      aeroPaged(()=>SB.from('aero_size_forecasts').select('orchard_id,processed_date,forecast_date,size_ranges').in('orchard_id',oids).not('size_ranges','is',null).order('orchard_id').order('processed_date',{ascending:false}))]);
+    const meas={},split={};ms.forEach(x=>{if(!meas[x.orchard_id])meas[x.orchard_id]=x;});sp.forEach(x=>{if(!split[x.orchard_id])split[x.orchard_id]=x;});
+    const so=Object.keys(split),runs=[...new Set(so.map(o=>split[o].processed_date))],win={};
+    if(so.length){const rows=await aeroPaged(()=>SB.from('aero_size_forecasts').select('orchard_id,processed_date,forecast_date').in('orchard_id',so).in('processed_date',runs).order('orchard_id').order('forecast_date'));
+      rows.forEach(x=>{const s0=split[x.orchard_id];if(!s0||s0.processed_date!==x.processed_date)return;const w=win[x.orchard_id]=win[x.orchard_id]||{s:x.forecast_date,e:x.forecast_date};if(x.forecast_date<w.s)w.s=x.forecast_date;if(x.forecast_date>w.e)w.e=x.forecast_date;});}
+    // only forecasts whose weeks overlap this planner season; visits from the 10 months before it ends
+    const iso=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+    const sS=WKDATE.length?iso(WKDATE[0]):'0000-01-01', eD=WKDATE.length?new Date(WKDATE[WKDATE.length-1]):new Date(); eD.setDate(eD.getDate()+6); const sE=iso(eD);
+    const mMin=iso(new Date(new Date(sE+'T00:00:00').getTime()-300*864e5));
+    let skipped=null;
+    const by={};Object.keys(byBlock).forEach(b=>{const o=byBlock[b].oid;let m=meas[o],s0=split[o];
+      if(s0&&win[o]&&(win[o].e<sS||win[o].s>sE)){ if(!skipped||win[o].s<skipped.s) skipped={s:win[o].s,e:win[o].e}; s0=null; }
+      if(m&&(m.measurement_date<mMin||m.measurement_date>sE)) m=null;
+      if(!m&&!s0)return;
+      by[b]={m:m&&m.avg_size_mm!=null?Number(m.avg_size_mm):null,md:m?m.measurement_date:null,fd:s0?s0.forecast_date:null,
+        ranges:s0?(s0.size_ranges||[]).map(r=>({label:r.label,c:Number(r.percentage_of_total_count)||0,w:Number(r.percentage_of_total_mass)||0})):null,ws:win[o]&&win[o].s,we:win[o]&&win[o].e};});
+    if(aeroHP.key!==key)return; aeroHP={key,state:'ok',by,skipped};
+  }catch(e){ if(aeroHP.key===key) aeroHP={key,state:'error',by:{},err:(e&&e.message)||String(e)}; console.warn('aerobotics',e); }
+  if(page==='ov') renderOv();
+  else if(page==='log'){
+    const ae=document.activeElement, typing=ae && /^(INPUT|TEXTAREA)$/.test(ae.tagName) && ae.closest && ae.closest('#logTable');
+    if(!typing) renderLog();   // don't redraw under the cursor while typing in a grid cell…
+    else ae.addEventListener('blur',()=>{ if(page==='log') setTimeout(renderLog,0); },{once:true});   // …redraw as soon as they leave it
+  }
+}
+// one line under the harvest-window chip: TrueFruit size now · peak count · Aerobotics forecast weeks vs our window
+function aeroWinLine(i){
+  if(product!=='citrus'||aeroHP.state!=='ok') return '';
+  const p=plots[i], a=p&&aeroHP.by[p.blockId]; if(!a) return '';
+  const pk=a.ranges&&a.ranges.length?a.ranges.reduce((x,r)=>r.c>x.c?r:x,a.ranges[0]):null;
+  const parts=[]; if(a.m!=null) parts.push(a.m.toFixed(1)+' mm'); if(pk) parts.push('fcst count '+esc(pk.label));
+  if(a.ws) parts.push('Aero '+aeroShort(a.ws)+'→'+aeroShort(a.we));
+  if(!parts.length) return '';
+  const tip='Aerobotics TrueFruit'+(a.md?' · last visit '+aeroShort(a.md)+': '+(a.m!=null?a.m.toFixed(1)+' mm':'—'):'')+(pk?' · most common size class at harvest start: '+pk.label+' ('+Math.round(pk.c)+'%)':'')+(a.ws?' · Aerobotics forecast weeks '+aeroShort(a.ws)+' → '+aeroShort(a.we)+' (chosen by Aerobotics, not this plan)':'');
+  return `<div class="aeroline" title="${esc(tip)}"><span style="color:var(--accent)">●</span> ${parts.join(' · ')}</div>`;
+}
+// TrueFruit column in the plan grid: size now · harvest count (fcst) + timing gap vs this plot's window
+function aeroCell(i,w){
+  if(aeroHP.state==='loading') return '<span class="aeromute aeroload">loading…</span>';
+  const p=plots[i], a=p&&aeroHP.by[p.blockId]; if(!a) return '<span class="aeromute">—</span>';
+  const pk=a.ranges&&a.ranges.length?a.ranges.reduce((x,r)=>r.c>x.c?r:x,a.ranges[0]):null;
+  let gap='';
+  if(a.ws&&w&&WKDATE[w.start]){ const d=Math.round((new Date(a.ws+'T00:00:00')-new Date(dateOf(w.start,0)+'T00:00:00'))/864e5);
+    if(Math.abs(d)>=7) gap=`<div class="aerogap ${d<0?'early':'late'}">Aero ${d>0?'+':'−'}${Math.abs(d)} d</div>`; }
+  const tip='Aerobotics TrueFruit'+(a.md?' · last visit '+aeroShort(a.md)+': '+(a.m!=null?a.m.toFixed(1)+' mm':'—'):'')+(pk?' · forecast harvest count '+pk.label+' ('+Math.round(pk.c)+'% of fruit)':'')+(a.ws?' · Aerobotics forecast weeks '+aeroShort(a.ws)+' → '+aeroShort(a.we)+' (chosen by Aerobotics, not this plan)':'');
+  return `<div class="aerocellin" title="${esc(tip)}"><div><b>${a.m!=null?a.m.toFixed(1)+' mm':'—'}</b>${pk?` · ct ${esc(pk.label)}`:''}</div>${gap}</div>`;
+}
+function aeroShort(iso){if(!iso)return '—';const d=new Date(iso+'T00:00:00');return d.getDate()+' '+MON[d.getMonth()];}
+function aeroPlotRem(i){const latest=sum(WK.map((_,w)=>sum(WD.map((__,d)=>dayPlan(i,w,d)))));return Math.max(0,latest-sumTo(getActual,i,CUR,CURDAY));}
+function aeroPlotPlan(i){return sum(WK.map((_,w)=>sum(WD.map((__,d)=>dayPlan(i,w,d)))));}
+// per-variety aggregate: size weighted by season plan (area if no plan); split by count weighted by remaining t (mass share)
+function aeroVarAgg(v){
+  const ps=plots.map((p,i)=>({p,i})).filter(x=>x.p.v===v&&aeroHP.by[x.p.blockId]);
+  if(!ps.length)return null;
+  let sw=0,sm=0,ws=null,we=null,order=[],tByLabel={},cW={},cWt=0,remCov=0,mW={},mWt=0;
+  ps.forEach(({p,i})=>{const a=aeroHP.by[p.blockId],wt=aeroPlotPlan(i)||p.area||1;
+    if(a.m!=null){sm+=a.m*wt;sw+=wt;}
+    if(a.ws&&(!ws||a.ws<ws))ws=a.ws; if(a.we&&(!we||a.we>we))we=a.we;
+    if(a.ranges){const rem=aeroPlotRem(i);remCov+=rem;cWt+=wt;
+      const aw=p.area||1; mWt+=aw;
+      a.ranges.forEach(r=>{if(order.indexOf(r.label)<0)order.push(r.label);tByLabel[r.label]=(tByLabel[r.label]||0)+rem*r.w/100;cW[r.label]=(cW[r.label]||0)+r.c*wt;mW[r.label]=(mW[r.label]||0)+r.w*aw;});}});
+  const cnt={};order.forEach(l=>cnt[l]=cWt?cW[l]/cWt:0);
+  const peak=order.length?order.reduce((a,l)=>cnt[l]>cnt[a]?l:a,order[0]):null;
+  const wPct={};order.forEach(l=>wPct[l]=mWt?mW[l]/mWt:0);   // area-weighted share of fruit weight (used until plan tonnes exist)
+  return {n:ps.length,m:sw?sm/sw:null,ws,we,order,cnt,tByLabel,remCov,peak,wPct};
+}
+function aeroVarCells(v){if(!AERO_ON())return '';const a=aeroVarAgg(v);
+  if(!a)return '<td class="num" style="color:var(--text3)">—</td><td style="color:var(--text3)">—</td><td style="color:var(--text3)">—</td>';
+  return `<td class="num">${a.m!=null?a.m.toFixed(1)+' mm':'—'}</td><td>${a.peak?`<span class="plot" style="color:var(--accent)">${a.peak}</span> <span style="font-size:11px;color:var(--text3)">${Math.round(a.cnt[a.peak])}%</span>`:'—'}</td><td style="white-space:nowrap;font-size:12px">${a.ws?aeroShort(a.ws)+' → '+aeroShort(a.we):'—'}</td>`;}
+function aeroPlotCells(bid){if(!AERO_ON())return '';const a=aeroHP.by[bid];
+  if(!a)return '<td class="num" style="color:var(--text3)">—</td><td style="color:var(--text3)">—</td>';
+  const pk=a.ranges&&a.ranges.length?a.ranges.reduce((x,r)=>r.c>x.c?r:x,a.ranges[0]):null;
+  return `<td class="num" title="${a.md?'TrueFruit visit '+aeroShort(a.md):''}">${a.m!=null?a.m.toFixed(1)+' mm':'—'}</td><td>${pk?`<span class="plot" style="color:var(--accent)">${pk.label}</span> <span style="font-size:11px;color:var(--text3)">${Math.round(pk.c)}%</span>`:'—'}</td>`;}
+function aeroPackHTML(A){
+  if(product!=='citrus')return '';
+  if(aeroHP.state==='loading'||aeroHP.state==='idle')return `<div class="sec-title">Expected pack-out by count <span class="r">loading Aerobotics TrueFruit…</span></div>`;
+  if(aeroHP.state==='error')return `<div class="sec-title">Expected pack-out by count <span class="r">Aerobotics data could not load: ${esc(aeroHP.err||'')}</span></div>`;
+  const rows=A.map(a=>({a,g:aeroVarAgg(a.v)})).filter(x=>x.g&&x.g.order.length);
+  if(!rows.length)return `<div class="sec-title">Expected pack-out by count <span class="r">${aeroHP.skipped?'TrueFruit forecasts cover '+aeroShort(aeroHP.skipped.s)+' onwards, outside this season — open the season that includes them':'no TrueFruit size forecasts for this season\'s plots yet'}</span></div>`;
+  const ramp=['#0d4f4c','#2f7d6b','#7fb08a','#cfd9a6','#f3ead2'];
+  const col=(i,n)=>{const t=n>1?i/(n-1):0,x=t*(ramp.length-1),k=Math.min(ramp.length-2,Math.floor(x));return ramp[x-k<0.5?k:k+1];};
+  const useT=rows.some(({g})=>g.remCov>0.5);   // plan tonnes entered? else show % of fruit weight
+  const val=(g,l)=>useT?(g.tByLabel[l]||0):(g.wPct[l]||0);
+  const fmtV=v=>useT?Math.round(v).toLocaleString()+' t':v.toFixed(1)+'%';
+  const body=rows.map(({a,g})=>{
+    const core=g.order.filter(l=>l!=='Oversize'&&l!=='Undersize'),totT=g.order.reduce((s0,l)=>s0+val(g,l),0)||1;
+    const seg=g.order.map(l=>{const t=val(g,l),pct=t/totT*100;if(pct<=0)return '';const ci=core.indexOf(l),bg=ci<0?'var(--border2)':col(ci,core.length),dark=ci>=0&&ci/(Math.max(1,core.length-1))<0.5;
+      return `<i title="${esc(l)} · ${useT?Math.round(t).toLocaleString()+' t · ':''}${pct.toFixed(1)}% of weight" style="display:block;height:100%;width:${pct}%;background:${bg};position:relative"><span style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font:500 9.5px var(--font-mono);color:${dark?'#fff':'#1d3433'};overflow:hidden;white-space:nowrap">${pct>=7?esc(l):''}</span></i>`;}).join('');
+    const top=g.order.slice().sort((x,y)=>val(g,y)-val(g,x)).slice(0,3).map(l=>`${esc(l)} ${fmtV(val(g,l))}`).join(' · ');
+    return `<tr><td style="min-width:170px;white-space:nowrap"><span class="vname">${esc(a.v)}</span><div style="font-size:10.5px;color:var(--text3)">${g.n} of ${a.n} plots · from ${aeroShort(g.ws)}</div></td>
+      <td style="min-width:260px"><div style="display:flex;height:18px;border-radius:4px;overflow:hidden;background:var(--bg2)">${seg}</div><div style="font-size:11px;color:var(--text2);margin-top:3px">${top}</div></td>
+      ${useT?`<td class="num">${Math.round(g.remCov).toLocaleString()}</td><td class="num">${a.rem?Math.round(g.remCov/a.rem*100):0}%</td>`:`<td class="num">${fmt1(sum(plots.filter(p=>p.v===a.v&&aeroHP.by[p.blockId]&&aeroHP.by[p.blockId].ranges).map(p=>p.area)))}</td><td class="num">${a.area?Math.round(sum(plots.filter(p=>p.v===a.v&&aeroHP.by[p.blockId]&&aeroHP.by[p.blockId].ranges).map(p=>p.area))/a.area*100):0}%</td>`}</tr>`;}).join('');
+  const all=[];rows.forEach(({g})=>g.order.forEach(l=>{if(all.indexOf(l)<0)all.push(l);}));
+  return `<div class="sec-title">Expected pack-out by count <span class="r">${useT?'tonnes (forecast)':'share of fruit weight — no plan tonnes yet'}</span></div>
+    <div class="hint">Aerobotics TrueFruit forecast for each plot’s first harvest week${useT?' × remaining plan tonnes':''}, split by fruit weight. Darker = bigger fruit (lower count); grey = over/undersize. ${useT?'':'Tonnes per count appear once plan tonnes are entered.'} Under each variety: how many of its plots have a forecast.</div>
+    <div class="table-wrap"><table><tr><th style="min-width:170px">Variety</th><th style="width:60%">${useT?'Split of remaining tonnes by count':'Split of fruit weight by count'}</th><th class="num">${useT?'Remaining t covered':'Area covered (fed)'}</th><th class="num">Coverage</th></tr>${body}</table></div>
+    <details style="margin-top:8px"><summary style="cursor:pointer;font-size:12px;color:var(--accent)">${useT?'Tonnes per count, by variety':'% of fruit weight per count, by variety'}</summary>
+      <div class="table-wrap" style="margin-top:6px"><table><tr><th class="frozen f0">Variety</th>${all.map(l=>`<th class="num">${esc(l)}</th>`).join('')}</tr>
+      ${rows.map(({a,g})=>`<tr><td class="frozen f0"><span class="vname">${esc(a.v)}</span></td>${all.map(l=>{const t=val(g,l);return `<td class="num">${(useT?t>=0.5:t>=0.05)?(useT?Math.round(t).toLocaleString():t.toFixed(1)):'<span style="color:var(--text3)">·</span>'}</td>`;}).join('')}</tr>`).join('')}</table></div></details>`;
 }
 
 function setPage(p){page=p;
@@ -1537,6 +1674,7 @@ function setPresent(on){
   if(on){ try{if(document.documentElement.requestFullscreen)document.documentElement.requestFullscreen();}catch(e){} }
   else { try{if(document.fullscreenElement&&document.exitFullscreen)document.exitFullscreen();}catch(e){} }
   // present forces the 2-week grid (viewCols reads the present class), so re-render the active page
+  if(on && (actView==='today'||actView==='day')) actView='weeks'; // start the wall on the 2-week overview, not a single edit-day
   if(page==='log')renderLog(); else if(page==='trk')renderTrucks();
 }
 function togglePresent(){ setPresent(!document.body.classList.contains('present')); }
@@ -1566,7 +1704,8 @@ async function boot(){
   try{
     try{canWrite=!!(await SB.rpc('hp_can_write')).data;}catch(e){canWrite=false;}
     const ssr=await SB.from('seasons').select('id,name,active').order('name'); SEASONS=ssr.data||[];
-    SEASON=SEASONS.find(s=>s.active)||SEASONS[SEASONS.length-1];
+    let lastSeason=null; try{ lastSeason=localStorage.getItem('hp_season'); }catch(e){}   // remember this browser's last pick
+    SEASON=SEASONS.find(s=>s.id===lastSeason)||SEASONS.find(s=>s.active)||SEASONS[SEASONS.length-1];
     if(!SEASON){document.body.insertAdjacentHTML('afterbegin','<div style=\'padding:14px;font-family:sans-serif\'>No season set in Land Cloud.</div>');return;}
     buildSeasonPicker();
     await loadSeason(SEASON);
@@ -1584,6 +1723,7 @@ async function pickSeason(id){
   if(!SEASON||id===SEASON.id)return;
   if(dirty.size){const ok=await uiConfirm('Switch season?','You have '+dirty.size+' unsaved change'+(dirty.size>1?'s':'')+' in '+SEASON.name+'. Switching seasons will discard them.','Switch');
     if(!ok){document.getElementById('seasonSel').value=SEASON.id;return;}}
+  try{ localStorage.setItem('hp_season',id); }catch(e){}   // remembered across refreshes (this browser)
   const s=SEASONS.find(x=>x.id===id);
   if(!s){document.getElementById('seasonSel').value=(SEASON&&SEASON.id)||'';return;}
   try{ await loadSeason(s); uiToast('Now viewing '+s.name+(s.active?' (active)':'')); }
